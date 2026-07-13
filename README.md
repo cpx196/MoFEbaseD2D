@@ -8,7 +8,9 @@
 
 ## 时间线
 
-### 2026-07-13：建立 GPT-2 Small dense 基线
+### 2026-07-13
+
+#### 建立 GPT-2 Small dense 基线
 
 - 从上游 D2DMoE commit `a7027cdc` 开始整理实验环境。
 - 创建 `d2d-gpt` Conda 环境，使用 Python 3.11、PyTorch 2.5.1+cu124。
@@ -36,7 +38,7 @@ Dense 基线结果：
 
 ![GPT-2 Small dense baseline](results/dense_gpt2_small/figures/baseline_overview.png)
 
-### 2026-07-13：整理为独立公开仓库
+#### 整理为独立公开仓库
 
 - 保留上游 MIT License、论文引用和 `upstream` Git remote。
 - 增加缓存、数据集、权重、日志和密钥的忽略规则。
@@ -44,7 +46,7 @@ Dense 基线结果：
 - 将 dense 汇总 CSV 和结果图纳入版本管理，不提交模型权重和数据集。
 - 仓库整理提交：`50c8b67`。
 
-### 2026-07-13：定义 MoFE 结构
+#### 定义 MoFE 结构
 
 根据 `D2Dinstr/MoFE_GPT2_MoFEversion.md` 确定主实验结构：
 
@@ -66,7 +68,7 @@ e = 4i + j
 GPT-2 hidden size 为 768，主配置 rank 为 576。A/B 使用 dense FFN 权重的
 行列切片初始化，core 使用标准差 0.025 的独立随机初始化。
 
-### 2026-07-13：完成 MoFE 代码与验证链路
+#### 完成 MoFE 代码与验证链路
 
 - 在 `MoFE/` 中实现模型转换、factorized expert、token-choice top-3 路由、
   balance loss 和 router z-loss。
@@ -102,7 +104,7 @@ private scale 在 200 steps 内从 0 线性增加到 1。
 - 真实 GPT-2 Small 的三层 MoFE 构建和短序列前向。
 - Tiny GPT-2 的 2-step 端到端训练、日志和 final checkpoint 重载。
 
-### 2026-07-13：评测未 warmup 的初始化 MoFE
+#### 评测未 warmup 的初始化 MoFE
 
 为了直接验证随机 private 分支全开造成的影响，构建 MoFE 后不执行训练，固定
 `private_scale=1.0`，直接运行与 dense 基线相同的六项 zero-shot 任务。该实验
