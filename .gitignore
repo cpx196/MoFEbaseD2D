@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local environments and secrets
+.venv/
+venv/
+env/
+user.env
+.env
+.env.*
+!.env.example
+
+# Training artifacts, datasets, and model weights
+data/
+datasets/
+checkpoints/
+weights/
+runs/
+logs/
+outputs/
+wandb/
+lightning_logs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Hugging Face and package caches
+.cache/
+hf_cache/
+pip-build/
+
+# Keep only the published dense-baseline summary and figures.
+/results/*
+!/results/dense_gpt2_small/
+/results/dense_gpt2_small/*
+!/results/dense_gpt2_small/metrics_summary.csv
+!/results/dense_gpt2_small/figures/
+!/results/dense_gpt2_small/figures/*.png
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

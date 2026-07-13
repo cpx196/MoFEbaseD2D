@@ -1,0 +1,12 @@
+# Dense GPT-2 baseline evaluation environment, verified on Python 3.11.
+# Install PyTorch for the CUDA version supported by the target host first.
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+accelerate==1.14.0
+datasets==5.0.0
+lm-eval==0.4.12
+matplotlib==3.11.0
+safetensors==0.8.0
+transformers==5.13.1
