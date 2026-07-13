@@ -40,6 +40,11 @@ pip-build/
 !/results/dense_gpt2_small/metrics_summary.csv
 !/results/dense_gpt2_small/figures/
 !/results/dense_gpt2_small/figures/*.png
+!/results/mofe_gpt2_no_warmup/
+/results/mofe_gpt2_no_warmup/*
+!/results/mofe_gpt2_no_warmup/figures/
+!/results/mofe_gpt2_no_warmup/figures/*.csv
+!/results/mofe_gpt2_no_warmup/figures/*.png
 
 # Editors and operating systems
 .DS_Store

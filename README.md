@@ -102,11 +102,39 @@ private scale 在 200 steps 内从 0 线性增加到 1。
 - 真实 GPT-2 Small 的三层 MoFE 构建和短序列前向。
 - Tiny GPT-2 的 2-step 端到端训练、日志和 final checkpoint 重载。
 
+### 2026-07-13：评测未 warmup 的初始化 MoFE
+
+为了直接验证随机 private 分支全开造成的影响，构建 MoFE 后不执行训练，固定
+`private_scale=1.0`，直接运行与 dense 基线相同的六项 zero-shot 任务。该实验
+是 initialization-only 对照，不代表训练后的 MoFE。
+
+| 任务 | Dense | MoFE no-warmup | 绝对变化 |
+| --- | ---: | ---: | ---: |
+| LAMBADA OpenAI | 0.3097 | 0.0000 | -0.3097 |
+| HellaSwag | 0.3122 | 0.2619 | -0.0503 |
+| PIQA | 0.6257 | 0.5114 | -0.1143 |
+| WinoGrande | 0.5138 | 0.5036 | -0.0103 |
+| ARC Easy | 0.3977 | 0.2546 | -0.1431 |
+| ARC Challenge | 0.2287 | 0.2637 | +0.0350 |
+
+![Dense vs MoFE without warmup](results/mofe_gpt2_no_warmup/figures/no_warmup_vs_dense.png)
+
+除 ARC Challenge 外，其余五项均下降；更重要的是，MoFE 分数整体接近各
+选择题任务的随机猜测水平，LAMBADA accuracy 降为 0。ARC Challenge 的
+`0.2637` 也接近四选一随机水平，不能解释为能力提升。这与初始化时观测到的
+巨大 logit 扰动一致，说明不能跳过 private 分支 warmup 或等效的稳定初始化。
+
+比较数据保存在
+[`no_warmup_vs_dense.csv`](results/mofe_gpt2_no_warmup/figures/no_warmup_vs_dense.csv)。
+完整 `lm-eval` JSON 和日志保存在仓库外的数据目录
+`/home/pxchen/data/pxchen/results/mofe_gpt2_no_warmup/`。
+
 ## 当前状态
 
-已经完成 dense 基线、MoFE 架构代码、初始化验证和训练链路验证。尚未选择
-MoFE continued-training 数据集，因此正式 200-step 训练尚未运行，也没有可报告的
-MoFE perplexity、下游准确率或相对 dense 的性能结论。
+已经完成 dense 基线、MoFE 架构代码、初始化验证、训练链路验证，以及未训练、
+未 warmup 初始化模型的下游对照。尚未选择 MoFE continued-training 数据集，
+因此正式 200-step 训练尚未运行；当前结果只能说明随机 private 分支直接全开会
+破坏原模型能力，不能用于判断训练后 MoFE 的最终性能。
 
 下一阶段顺序为：
 
@@ -124,6 +152,8 @@ MoFE perplexity、下游准确率或相对 dense 的性能结论。
 | `MoFE/modeling.py` | GPT-2 block 替换、损失、统计和参数量 |
 | `MoFE/train.py` | 默认 200-step 的通用训练入口 |
 | `MoFE/validate_initialization.py` | 真实 GPT-2 初始化报告 |
+| `MoFE/eval_no_warmup.py` | 未训练、无 warmup MoFE 的 lm-eval 入口 |
+| `MoFE/plot_no_warmup_comparison.py` | Dense/MoFE 对比 CSV 与柱状图 |
 | `MoFE/tests/test_mofe.py` | 无数据集依赖的单元测试 |
 | `MoFE/configs/` | MoFE 主实验配置 |
 | `MoFE_METHOD.md` | MoFE 数学定义、初始化和训练细节 |
