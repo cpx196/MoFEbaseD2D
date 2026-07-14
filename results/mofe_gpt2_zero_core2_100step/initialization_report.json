@@ -1,0 +1,504 @@
+{
+  "config": {
+    "model_name_or_path": "openai-community/gpt2",
+    "moe_layer_indices": [
+      9,
+      10,
+      11
+    ],
+    "num_private_experts": 16,
+    "top_k": 3,
+    "low_rank_ratio": 0.75,
+    "rank": 576,
+    "core_init_std": 0.025,
+    "zero_init_output_core": true,
+    "router_init_std": 0.02,
+    "router_aux_loss_coef": 0.01,
+    "router_z_loss_coef": 0.001,
+    "private_output_scale": 1.0,
+    "train_factors": true,
+    "train_cores": true,
+    "train_private_bias": true,
+    "train_router": true,
+    "train_shared_expert": true,
+    "seed": 42,
+    "moe_type": "mofe",
+    "routing": "token_choice",
+    "shared_expert": true,
+    "shared_expert_in_router": false,
+    "factor_sharing": "cartesian_4x4",
+    "factor_init": "dense_row_column_slice",
+    "core_init": "normal_input_zero_output",
+    "private_bias_init": "zeros"
+  },
+  "parameter_breakdown": {
+    "shared_experts": 14167296,
+    "factor_banks": 53084160,
+    "cores": 31850496,
+    "private_biases": 184320,
+    "routers": 36912,
+    "remaining_backbone": 110272512,
+    "total": 209595696,
+    "trainable": 209595696
+  },
+  "dense_vs_shared_only_logits_max_abs_diff": 0.0,
+  "dense_vs_full_mofe_logits_max_abs_diff": 0.0,
+  "layers": {
+    "transformer.h.9.mlp": {
+      "shared_max_abs_diff": 0.0,
+      "a1_slice_max_abs_diff": 0.0,
+      "b1_slice_max_abs_diff": 0.0,
+      "a2_slice_max_abs_diff": 0.0,
+      "b2_slice_max_abs_diff": 0.0,
+      "parameters": {
+        "a1": {
+          "shape": [
+            4,
+            3072,
+            576
+          ],
+          "mean": -0.0033133525867015123,
+          "std": 0.12759660184383392,
+          "norm": 339.50775146484375,
+          "requires_grad": true
+        },
+        "b1": {
+          "shape": [
+            4,
+            576,
+            768
+          ],
+          "mean": -0.0027915334794670343,
+          "std": 0.1280629187822342,
+          "norm": 170.3876495361328,
+          "requires_grad": true
+        },
+        "core1": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": 7.86233340477338e-06,
+          "std": 0.02500186488032341,
+          "norm": 57.59649658203125,
+          "requires_grad": true
+        },
+        "a2": {
+          "shape": [
+            4,
+            768,
+            576
+          ],
+          "mean": 4.900084240944125e-05,
+          "std": 0.1558353155851364,
+          "norm": 207.28839111328125,
+          "requires_grad": true
+        },
+        "b2": {
+          "shape": [
+            4,
+            576,
+            3072
+          ],
+          "mean": 0.00012321413669269532,
+          "std": 0.15620021522045135,
+          "norm": 415.4609680175781,
+          "requires_grad": true
+        },
+        "core2": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias1": {
+          "shape": [
+            16,
+            3072
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias2": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.weight": {
+          "shape": [
+            768,
+            3072
+          ],
+          "mean": -0.0027408814057707787,
+          "std": 0.12761934101581573,
+          "norm": 196.06077575683594,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.bias": {
+          "shape": [
+            3072
+          ],
+          "mean": -0.08366744965314865,
+          "std": 0.09234823286533356,
+          "norm": 6.90676212310791,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.weight": {
+          "shape": [
+            3072,
+            768
+          ],
+          "mean": 3.4792588849086314e-05,
+          "std": 0.15587382018566132,
+          "norm": 239.41290283203125,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.bias": {
+          "shape": [
+            768
+          ],
+          "mean": 0.0007137336651794612,
+          "std": 0.15907931327819824,
+          "norm": 4.408579349517822,
+          "requires_grad": true
+        },
+        "router.weight": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 0.00018623789947014302,
+          "std": 0.020021332427859306,
+          "norm": 2.2194855213165283,
+          "requires_grad": true
+        },
+        "router.bias": {
+          "shape": [
+            16
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        }
+      }
+    },
+    "transformer.h.10.mlp": {
+      "shared_max_abs_diff": 0.0,
+      "a1_slice_max_abs_diff": 0.0,
+      "b1_slice_max_abs_diff": 0.0,
+      "a2_slice_max_abs_diff": 0.0,
+      "b2_slice_max_abs_diff": 0.0,
+      "parameters": {
+        "a1": {
+          "shape": [
+            4,
+            3072,
+            576
+          ],
+          "mean": -0.003669041907414794,
+          "std": 0.12767355144023895,
+          "norm": 339.7377014160156,
+          "requires_grad": true
+        },
+        "b1": {
+          "shape": [
+            4,
+            576,
+            768
+          ],
+          "mean": -0.0031594187021255493,
+          "std": 0.12729580700397491,
+          "norm": 169.37828063964844,
+          "requires_grad": true
+        },
+        "core1": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": -8.359988896700088e-06,
+          "std": 0.024994507431983948,
+          "norm": 57.57939529418945,
+          "requires_grad": true
+        },
+        "a2": {
+          "shape": [
+            4,
+            768,
+            576
+          ],
+          "mean": 4.479056769923773e-06,
+          "std": 0.17767415940761566,
+          "norm": 236.3385009765625,
+          "requires_grad": true
+        },
+        "b2": {
+          "shape": [
+            4,
+            576,
+            3072
+          ],
+          "mean": 8.354060264537111e-05,
+          "std": 0.1790006309747696,
+          "norm": 476.11444091796875,
+          "requires_grad": true
+        },
+        "core2": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias1": {
+          "shape": [
+            16,
+            3072
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias2": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.weight": {
+          "shape": [
+            768,
+            3072
+          ],
+          "mean": -0.003208046080544591,
+          "std": 0.12764810025691986,
+          "norm": 196.12142944335938,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.bias": {
+          "shape": [
+            3072
+          ],
+          "mean": -0.07652498036623001,
+          "std": 0.09121372550725937,
+          "norm": 6.599145889282227,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.weight": {
+          "shape": [
+            3072,
+            768
+          ],
+          "mean": 6.105259217292769e-06,
+          "std": 0.17814524471759796,
+          "norm": 273.6199645996094,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.bias": {
+          "shape": [
+            768
+          ],
+          "mean": 0.0016591999446973205,
+          "std": 0.19391413033008575,
+          "norm": 5.374102592468262,
+          "requires_grad": true
+        },
+        "router.weight": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 0.00019112578593194485,
+          "std": 0.020218968391418457,
+          "norm": 2.241398572921753,
+          "requires_grad": true
+        },
+        "router.bias": {
+          "shape": [
+            16
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        }
+      }
+    },
+    "transformer.h.11.mlp": {
+      "shared_max_abs_diff": 0.0,
+      "a1_slice_max_abs_diff": 0.0,
+      "b1_slice_max_abs_diff": 0.0,
+      "a2_slice_max_abs_diff": 0.0,
+      "b2_slice_max_abs_diff": 0.0,
+      "parameters": {
+        "a1": {
+          "shape": [
+            4,
+            3072,
+            576
+          ],
+          "mean": -0.0022903871722519398,
+          "std": 0.12994001805782318,
+          "norm": 345.68377685546875,
+          "requires_grad": true
+        },
+        "b1": {
+          "shape": [
+            4,
+            576,
+            768
+          ],
+          "mean": -0.0021762182004749775,
+          "std": 0.12898662686347961,
+          "norm": 171.60000610351562,
+          "requires_grad": true
+        },
+        "core1": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": -2.271583525725873e-06,
+          "std": 0.0250083114951849,
+          "norm": 57.611541748046875,
+          "requires_grad": true
+        },
+        "a2": {
+          "shape": [
+            4,
+            768,
+            576
+          ],
+          "mean": -0.0004830478283111006,
+          "std": 0.20098824799060822,
+          "norm": 267.3512268066406,
+          "requires_grad": true
+        },
+        "b2": {
+          "shape": [
+            4,
+            576,
+            3072
+          ],
+          "mean": -0.0005190327647142112,
+          "std": 0.20034195482730865,
+          "norm": 532.8778686523438,
+          "requires_grad": true
+        },
+        "core2": {
+          "shape": [
+            16,
+            576,
+            576
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias1": {
+          "shape": [
+            16,
+            3072
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "private_bias2": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.weight": {
+          "shape": [
+            768,
+            3072
+          ],
+          "mean": -0.0018464161548763514,
+          "std": 0.13000448048114777,
+          "norm": 199.6977081298828,
+          "requires_grad": true
+        },
+        "shared_expert.c_fc.bias": {
+          "shape": [
+            3072
+          ],
+          "mean": -0.06411425024271011,
+          "std": 0.09302566945552826,
+          "norm": 6.261970520019531,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.weight": {
+          "shape": [
+            3072,
+            768
+          ],
+          "mean": -0.00043532054405659437,
+          "std": 0.19821903109550476,
+          "norm": 304.45098876953125,
+          "requires_grad": true
+        },
+        "shared_expert.c_proj.bias": {
+          "shape": [
+            768
+          ],
+          "mean": 0.000971626490354538,
+          "std": 0.10817643254995346,
+          "norm": 2.9979941844940186,
+          "requires_grad": true
+        },
+        "router.weight": {
+          "shape": [
+            16,
+            768
+          ],
+          "mean": 7.50044928281568e-05,
+          "std": 0.02006763219833374,
+          "norm": 2.2245371341705322,
+          "requires_grad": true
+        },
+        "router.bias": {
+          "shape": [
+            16
+          ],
+          "mean": 0.0,
+          "std": 0.0,
+          "norm": 0.0,
+          "requires_grad": true
+        }
+      }
+    }
+  }
+}

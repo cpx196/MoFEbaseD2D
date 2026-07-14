@@ -54,8 +54,8 @@ def parse_args() -> argparse.Namespace:
         default=str(data_root / "checkpoints" / "mofe_gpt2_last3_e16_k3"),
     )
     parser.add_argument("--block-size", type=int, default=1024)
-    parser.add_argument("--per-device-batch-size", type=int, default=1)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--per-device-batch-size", type=int, default=4)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=200)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--weight-decay", type=float, default=0.1)
@@ -212,12 +212,31 @@ def main() -> None:
     args = parse_args()
     if args.max_steps <= 0:
         raise ValueError("max_steps must be positive")
+    if args.per_device_batch_size <= 0:
+        raise ValueError("per_device_batch_size must be positive")
+    if args.gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive")
     set_seed(args.seed)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision="bf16",
+        step_scheduler_with_optimizer=False,
         kwargs_handlers=[ddp_kwargs],
+    )
+    effective_batch_size = (
+        args.per_device_batch_size
+        * accelerator.num_processes
+        * args.gradient_accumulation_steps
+    )
+    accelerator.print(
+        "training_config "
+        f"num_processes={accelerator.num_processes} "
+        f"per_device_batch_size={args.per_device_batch_size} "
+        f"gradient_accumulation_steps={args.gradient_accumulation_steps} "
+        f"effective_batch_size={effective_batch_size} "
+        f"tokens_per_optimizer_step={effective_batch_size * args.block_size}",
+        flush=True,
     )
     output_dir = Path(args.output_dir)
     if accelerator.is_main_process:
@@ -292,6 +311,7 @@ def main() -> None:
                 global_step, args.private_warmup_steps, target_private_scale
             )
             set_private_scale(model, scale)
+            gradient_norm = None
             with accelerator.accumulate(model):
                 outputs = model(**batch)
                 aux_losses = collect_mofe_losses(model)
@@ -302,9 +322,10 @@ def main() -> None:
                 )
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                    gradient_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                scheduler.step()
+                if accelerator.sync_gradients and not optimizer.step_was_skipped:
+                    scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
             if not accelerator.sync_gradients:
@@ -319,20 +340,35 @@ def main() -> None:
                     peak_memory = accelerator.gather(local_peak_memory).max().item()
                 else:
                     peak_memory = 0
+                routing = distributed_routing_statistics(accelerator, model)
                 record = {
                     "step": global_step,
                     "lm_loss": float(outputs.loss.detach()),
                     "balance_loss": float(aux_losses["balance_loss"].detach()),
                     "z_loss": float(aux_losses["z_loss"].detach()),
                     "total_loss": float(loss.detach()),
+                    "gradient_norm": float(gradient_norm.detach()),
                     "learning_rate": scheduler.get_last_lr()[0],
                     "private_scale": scale,
                     "elapsed_seconds": elapsed,
                     "tokens_per_second": tokens_seen / max(elapsed, 1e-9),
                     "peak_memory_bytes": int(peak_memory),
-                    "routing": distributed_routing_statistics(accelerator, model),
+                    "routing": routing,
                 }
-                accelerator.print(json.dumps(record))
+                routing_summary = " ".join(
+                    f"h{name.split('.')[2]}:ratio={stats['private_to_shared_norm']:.2f},"
+                    f"cv={stats['load_cv']:.2f}"
+                    for name, stats in routing.items()
+                )
+                accelerator.print(
+                    f"step={global_step:06d}/{args.max_steps:06d} "
+                    f"lm_loss={record['lm_loss']:.4f} total_loss={record['total_loss']:.4f} "
+                    f"grad_norm={record['gradient_norm']:.3f} "
+                    f"lr={record['learning_rate']:.3e} private_scale={scale:.4f} "
+                    f"tokens_per_second={record['tokens_per_second']:.0f} "
+                    f"peak_memory_gib={peak_memory / 2**30:.2f} | {routing_summary}",
+                    flush=True,
+                )
                 if accelerator.is_main_process:
                     with log_path.open("a") as handle:
                         handle.write(json.dumps(record) + "\n")
@@ -361,6 +397,8 @@ def main() -> None:
             tokenizer=tokenizer,
             metadata={"global_step": global_step, "training_args": vars(args)},
         )
+    accelerator.wait_for_everyone()
+    accelerator.end_training()
 
 
 if __name__ == "__main__":

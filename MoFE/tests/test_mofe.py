@@ -70,6 +70,7 @@ class MoFETest(unittest.TestCase):
             torch.testing.assert_close(self.layer.b2[group], dense_w2[:12, :])
         self.assertGreater(self.layer.core1.std().item(), 0.0)
         self.assertFalse(torch.equal(self.layer.core1[0], self.layer.core1[1]))
+        self.assertEqual(torch.count_nonzero(self.layer.core2).item(), 0)
 
     def test_factorized_and_materialized_expert_match(self) -> None:
         states = torch.randn(5, 16)
@@ -83,9 +84,8 @@ class MoFETest(unittest.TestCase):
         )
         torch.testing.assert_close(factorized, materialized, atol=1e-6, rtol=1e-5)
 
-    def test_shared_only_preserves_dense_logits(self) -> None:
+    def test_zero_output_core_preserves_dense_logits(self) -> None:
         input_ids = torch.randint(0, 64, (2, 8))
-        self.layer.set_private_scale(0.0)
         with torch.inference_mode():
             expected = self.dense(input_ids).logits
             actual = self.model(input_ids).logits
@@ -104,6 +104,7 @@ class MoFETest(unittest.TestCase):
         aux = collect_mofe_losses(self.model)
         loss = outputs.loss + 0.01 * aux["balance_loss"] + 0.001 * aux["z_loss"]
         loss.backward()
+        self.assertGreater(self.layer.core2.grad.abs().sum().item(), 0.0)
         for parameter in (
             self.layer.a1,
             self.layer.b1,

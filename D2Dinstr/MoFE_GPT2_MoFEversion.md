@@ -170,22 +170,25 @@ B2_i ← W2[:r, :]       # [576, 3072]
 
 ### 4.4 Core 与 bias
 
-每层、每个 expert、每个线性层独立初始化 core：
+每层、每个 expert 的输入侧 core 独立随机初始化，输出侧 core 使用保持原函数的零初始化：
 
 ```text
 C1_e ~ Normal(0, σ²)
-C2_e ~ Normal(0, σ²)
+C2_e = 0
 σ = 0.1 × 192 / 768 = 0.025
 ```
 
 实现：
 
 ```python
-torch.nn.init.normal_(core, mean=0.0, std=0.025)
+torch.nn.init.normal_(core1, mean=0.0, std=0.025)
+torch.nn.init.zeros_(core2)
 torch.nn.init.zeros_(private_bias)
 ```
 
-不同层、不同 expert 的 core 必须不同。A/B、core 和 private bias 均可训练。
+不同层、不同 expert 的 `C1` 必须不同；`C2` 从零开始但保持可训练。这样完整
+MoFE 在初始化时严格等于 shared/dense 模型，`C2` 更新后其余 private 参数逐步
+获得语言模型梯度。A/B、core 和 private bias 均可训练。
 
 ### 4.5 Router 与随机种子
 
@@ -294,8 +297,9 @@ low_rank_ratio: 0.75
 rank: 576
 factor_sharing: cartesian_4x4
 factor_init: dense_row_column_slice
-core_init: normal
+core_init: normal_input_zero_output
 core_init_std: 0.025
+zero_init_output_core: true
 private_bias_init: zeros
 train_factors: true
 train_cores: true
@@ -357,7 +361,7 @@ export TOKENIZERS_PARALLELISM=false
 3. 每个 token 恰好选择 3 个 private expert。
 4. shared 参数与原 dense FFN 完全相同。
 5. A/B 与对应 dense 权重切片完全一致。
-6. 16 个 core 形状正确、非零且彼此不同。
+6. 16 个 `C1` 形状正确、非零且彼此不同，`C2` 为零且可训练。
 7. A/B/core/private bias/router 均有非空梯度。
 8. 关闭 private 分支后，模型 logits 与原 dense 模型对齐。
 9. 开启 private 分支后输出无 NaN/Inf。

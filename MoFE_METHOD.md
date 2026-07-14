@@ -74,11 +74,13 @@ A1_i = W1[:, :576]       B1_i = W1[:576, :]
 A2_i = W2[:, :576]       B2_i = W2[:576, :]
 ```
 
-Core matrices are independent `Normal(0, 0.025^2)` samples. Private biases are
-zero. Router weights use `Normal(0, 0.02^2)` and router bias is zero. This is a
-row/column slice initialization, not an exact Nystrom reconstruction. Therefore
-the full MoFE output does not initially equal the dense output; only the
-shared-only output does.
+The input-side core matrices are independent `Normal(0, 0.025^2)` samples. The
+output-side cores and private biases are zero-initialized, while router weights
+use `Normal(0, 0.02^2)` and router bias is zero. Zero output cores make every
+private expert output exactly zero at initialization, so the full MoFE model
+initially preserves the dense GPT-2 function. The output cores receive gradients
+first; the remaining private factors begin receiving language-model gradients as
+the output cores move away from zero.
 
 ## Routing and losses
 
@@ -160,13 +162,12 @@ accelerate launch --num_processes 4 -m MoFE.train \
   --max-steps 200
 ```
 
-Defaults are one sequence per device, eight gradient-accumulation steps, bf16,
-20 optimizer warmup steps, and a 200-step private-branch warmup. The longer
-private ramp is deliberate: in a real GPT-2 initialization smoke test, the
-shared-only maximum logit difference was exactly zero, while immediately
-enabling the random private branch produced a maximum logit difference of
-126.83 for the test prompt. Dataset choice, sequence packing suitability,
-effective batch size, and learning rate must be confirmed before the run.
+Defaults are four sequences per device, two gradient-accumulation steps, bf16,
+20 optimizer warmup steps, and a 200-step private-branch warmup. On four GPUs,
+this preserves an effective batch size of 32 sequences per optimizer step. The longer
+private ramp provides an additional guard while the zero-initialized output cores
+begin to learn. Dataset choice, sequence packing suitability, effective batch
+size, and learning rate must be confirmed before the run.
 
 Checkpoints contain the MoFE configuration and Accelerate training state. The
 final export also contains a standalone state dictionary loadable through

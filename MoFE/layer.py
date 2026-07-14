@@ -122,7 +122,10 @@ class MoFEGPT2MLP(nn.Module):
             self.b2[group].copy_(dense_w2[: self.rank, :])
 
         nn.init.normal_(self.core1, mean=0.0, std=self.config.core_init_std)
-        nn.init.normal_(self.core2, mean=0.0, std=self.config.core_init_std)
+        if self.config.zero_init_output_core:
+            nn.init.zeros_(self.core2)
+        else:
+            nn.init.normal_(self.core2, mean=0.0, std=self.config.core_init_std)
         nn.init.zeros_(self.private_bias1)
         nn.init.zeros_(self.private_bias2)
         nn.init.normal_(self.router.weight, mean=0.0, std=self.config.router_init_std)

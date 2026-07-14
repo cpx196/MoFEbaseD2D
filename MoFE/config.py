@@ -19,6 +19,7 @@ class MoFEConfig:
     low_rank_ratio: float = 0.75
     rank: int | None = 576
     core_init_std: float = 0.025
+    zero_init_output_core: bool = True
     router_init_std: float = 0.02
     router_aux_loss_coef: float = 0.01
     router_z_loss_coef: float = 0.001
@@ -52,6 +53,8 @@ class MoFEConfig:
             raise ValueError("low_rank_ratio must be in (0, 1]")
         if self.core_init_std <= 0.0 or self.router_init_std <= 0.0:
             raise ValueError("initialization standard deviations must be positive")
+        if not isinstance(self.zero_init_output_core, bool):
+            raise ValueError("zero_init_output_core must be a boolean")
         if self.private_output_scale < 0.0:
             raise ValueError("private_output_scale must be non-negative")
         if hidden_size is not None:
@@ -74,7 +77,11 @@ class MoFEConfig:
                 "shared_expert_in_router": False,
                 "factor_sharing": f"cartesian_{groups}x{groups}",
                 "factor_init": "dense_row_column_slice",
-                "core_init": "normal",
+                "core_init": (
+                    "normal_input_zero_output"
+                    if self.zero_init_output_core
+                    else "normal"
+                ),
                 "private_bias_init": "zeros",
             }
         )

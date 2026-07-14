@@ -131,20 +131,92 @@ private scale 在 200 steps 内从 0 线性增加到 1。
 完整 `lm-eval` JSON 和日志保存在仓库外的数据目录
 `/home/pxchen/data/pxchen/results/mofe_gpt2_no_warmup/`。
 
+### 2026-07-14
+
+#### 定位首次 WikiText-103 100-step 训练异常
+
+- 选择 WikiText-103 train 作为 MoFE continued-training 数据，使用 GPT-2
+  tokenizer 打包为 1024-token 序列。
+- 首次 4 卡运行中，LM loss 从 `3.7386` 上升至 `12.5940`，未满足短程训练
+  loss 下降的验收条件；该失败 checkpoint 已删除。
+- 使用原始 dense GPT-2 在相同 packed 数据随机抽取 16 条序列，平均 loss 为
+  `3.5247`，确认数据和 causal-LM preprocessing 不是 loss 爆炸的主因。
+- 初始化 private/shared 输出范数比在 block 9、10、11 分别约为
+  `13.2、14.2、29.0`。线性 private warmup 到 step 5 时，最后一层 private
+  分支的实际强度已经超过 shared 分支。
+- 同时发现 Accelerate 在 4 卡下将 scheduler 推进了 4 倍：optimizer 为
+  100 steps，而 scheduler 到达 400。该问题导致 cosine LR 多次降至 0 后回升。
+
+#### 修复四卡训练链路与实时监控
+
+- 关闭 Accelerate 按进程数自动推进 scheduler，只在真实 optimizer update 后
+  调用一次 `scheduler.step()`。复测 checkpoint 中 optimizer 和 scheduler 均为
+  100 steps。
+- 将每卡 batch size 从 1 提高到 4，同时将 gradient accumulation 从 8 降到
+  2；四卡有效 batch 仍为 32 条序列，即每个 optimizer step 处理 32,768 tokens。
+- 增加启动配置摘要、clipping 前 gradient norm、紧凑单行 step 日志和强制
+  flush。完整 routing 统计继续保存为 JSONL。
+- batch 4 运行峰值 PyTorch allocated memory 为 `10.59 GiB/卡`，最终吞吐为
+  `63.1k tokens/s`；相较 batch 1 的约 `23.9k tokens/s` 提高约 2.6 倍。
+
+#### 使用保持原函数的 private 初始化
+
+原始实现同时随机初始化 `C1` 和 `C2`，导致未经训练的 private 分支产生巨大
+输出。稳定版本保留 A/B dense 切片和随机输入 core，但将输出 core 初始化为零：
+
+```text
+C1_e ~ Normal(0, 0.025^2)
+C2_e = 0
+```
+
+因此初始化时每个 private expert 输出严格为 0，完整 MoFE 与 dense GPT-2 的
+logits 最大误差为 `0.0`。训练开始后 `C2` 先获得梯度；随着 `C2` 离开零点，
+A/B 和 `C1` 逐步获得语言模型梯度。该变化只修改初始化，不改变 token-choice
+top-3 路由和最终 MoFE 表达能力。
+
+离线单元测试覆盖了 `C2` 零初始化、完整 MoFE/dense logits 对齐、`C2` 非零
+梯度、factorized/materialized 前向一致性和 checkpoint 重载。真实 GPT-2 初始化
+报告保存在
+[initialization_report.json](results/mofe_gpt2_zero_core2_100step/initialization_report.json)。
+
+#### 完成稳定的 100-step 工程训练
+
+使用 4 张 RTX 4090、bf16、每卡 batch 4、gradient accumulation 2、LR
+`1e-5`、10-step LR warmup 和 100-step private scale warmup 完成 WikiText-103
+短程训练。
+
+| 指标 | Step 1 | 最低记录值 | Step 100 |
+| --- | ---: | ---: | ---: |
+| LM loss | 3.6908 | 3.2503 | 3.3153 |
+| Total loss | 3.7088 | 3.2684 | 3.3333 |
+| Pre-clip gradient norm | 6.1875 | 3.0625 | 6.4375 |
+
+Step 100 的 block 9、10、11 raw private/shared 输出范数比分别为
+`0.96、0.47、0.61`，不再出现随机 private 分支压倒 shared 分支的情况。三个
+输出 core 的 norm 分别增长到 `0.346、0.320、0.303`，确认 private 分支已从零
+初始化中启动。这里的 loss 是工程训练日志中的采样 microbatch loss，不替代独立
+validation loss。
+
+[完整训练 JSONL](results/mofe_gpt2_zero_core2_100step/training_log.jsonl) 和
+[作图脚本](MoFE/plot_training_loss.py) 均由训练输出直接生成结果图：
+
+![MoFE GPT-2 100-step total loss](results/mofe_gpt2_zero_core2_100step/figures/training_total_loss.png)
+
 ## 当前状态
 
-已经完成 dense 基线、MoFE 架构代码、初始化验证、训练链路验证，以及未训练、
-未 warmup 初始化模型的下游对照。尚未选择 MoFE continued-training 数据集，
-因此正式 200-step 训练尚未运行；当前结果只能说明随机 private 分支直接全开会
-破坏原模型能力，不能用于判断训练后 MoFE 的最终性能。
+已经完成 dense 基线、MoFE 架构代码、未训练 no-warmup 对照、WikiText-103
+数据链路、稳定初始化和 4 卡 100-step 工程训练。零输出 core 版本在短程训练中
+保持 loss 稳定并成功训练 private 分支，但尚未完成独立 validation perplexity、
+六项 zero-shot 评测及相同 token 预算的 dense/upcycling MoE 对照，因此不能将
+该工程结果解释为最终方法收益。
 
 下一阶段顺序为：
 
-1. 确定 continued-training 数据集和数据预处理。
-2. 生成真实模型 `initialization_report.json`。
-3. 运行 200-step 工程训练，检查 loss、负载、范数、显存和吞吐。
-4. 决定是否扩大训练预算，并与 dense、dense upcycling MoE 做公平对比。
-5. 使用与 dense 基线相同的 WikiText-2 和六项 zero-shot 协议评测。
+1. 在 WikiText-2 validation 和六项 zero-shot 任务上评测 step-100 checkpoint。
+2. 增加独立 validation loss，并据此选择 checkpoint，而不是使用训练 loss。
+3. 以相同 token 数、数据顺序和有效 batch 运行 dense 与 dense upcycling MoE。
+4. 根据验证结果决定是否扩大训练步数并补充 3 个随机种子。
+5. 绘制 validation perplexity、expert usage、router entropy 和对照训练曲线。
 
 ## 主要文件
 
@@ -156,6 +228,7 @@ private scale 在 200 steps 内从 0 线性增加到 1。
 | `MoFE/validate_initialization.py` | 真实 GPT-2 初始化报告 |
 | `MoFE/eval_no_warmup.py` | 未训练、无 warmup MoFE 的 lm-eval 入口 |
 | `MoFE/plot_no_warmup_comparison.py` | Dense/MoFE 对比 CSV 与柱状图 |
+| `MoFE/plot_training_loss.py` | 从训练 JSONL 生成 loss 曲线 |
 | `MoFE/tests/test_mofe.py` | 无数据集依赖的单元测试 |
 | `MoFE/configs/` | MoFE 主实验配置 |
 | `MoFE_METHOD.md` | MoFE 数学定义、初始化和训练细节 |
@@ -168,4 +241,16 @@ private scale 在 200 steps 内从 0 线性增加到 1。
 python -m unittest MoFE.tests.test_mofe
 ```
 
-训练命令将在数据集确定后补充到本时间线。
+本次 100-step 工程训练的核心参数：
+
+```bash
+accelerate launch --num_processes 4 -m MoFE.train \
+  --train-file ./data/pxchen/datasets/wikitext103/train.jsonl \
+  --text-column text \
+  --per-device-batch-size 4 \
+  --gradient-accumulation-steps 2 \
+  --max-steps 100 \
+  --learning-rate 1e-5 \
+  --warmup-steps 10 \
+  --private-warmup-steps 100
+```
