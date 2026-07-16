@@ -12,7 +12,8 @@ from transformers import GPT2Config, GPT2LMHeadModel
 from MoFE.checkpoint import load_mofe_checkpoint, save_mofe_checkpoint
 from MoFE.config import MoFEConfig
 from MoFE.layer import MoFEGPT2MLP
-from MoFE.modeling import collect_mofe_losses, convert_gpt2_to_mofe
+from MoFE.modeling import collect_mofe_losses, convert_gpt2_to_mofe, shared_scale
+from MoFE.train import weighted_loss_payload
 
 
 def tiny_model() -> GPT2LMHeadModel:
@@ -91,6 +92,16 @@ class MoFETest(unittest.TestCase):
             actual = self.model(input_ids).logits
         torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
 
+    def test_shared_scale_ablation_is_temporary(self) -> None:
+        input_ids = torch.randint(0, 64, (1, 8))
+        with torch.inference_mode():
+            expected = self.model(input_ids).logits
+            with shared_scale(self.model, 0.0):
+                ablated = self.model(input_ids).logits
+            restored = self.model(input_ids).logits
+        self.assertFalse(torch.allclose(ablated, expected))
+        torch.testing.assert_close(restored, expected)
+
     def test_token_choice_routing_and_gradients(self) -> None:
         self.model.train()
         input_ids = torch.randint(0, 64, (2, 8))
@@ -133,6 +144,17 @@ class MoFETest(unittest.TestCase):
                 actual = restored(input_ids).logits
         self.assertEqual(restored_config, self.config)
         torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
+
+    def test_weighted_loss_payload_aggregates_microbatches(self) -> None:
+        first = weighted_loss_payload((torch.tensor(2.0), torch.tensor(4.0)), 4)
+        second = weighted_loss_payload((torch.tensor(6.0), torch.tensor(8.0)), 2)
+        aggregate = first + second
+        means = aggregate[:-1] / aggregate[-1]
+
+        torch.testing.assert_close(
+            means, torch.tensor([10.0 / 3.0, 16.0 / 3.0], dtype=torch.float64)
+        )
+        self.assertEqual(int(aggregate[-1]), 6)
 
 
 if __name__ == "__main__":

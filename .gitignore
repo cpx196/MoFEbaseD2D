@@ -15,6 +15,9 @@ user.env
 
 # Training artifacts, datasets, and model weights
 data/
+!data/
+data/*
+!data/README.md
 datasets/
 checkpoints/
 weights/
@@ -51,6 +54,8 @@ pip-build/
 !/results/mofe_gpt2_zero_core2_100step/training_log.jsonl
 !/results/mofe_gpt2_zero_core2_100step/figures/
 !/results/mofe_gpt2_zero_core2_100step/figures/*.png
+!/results/2026-07-15_1000step_comparison/
+!/results/2026-07-15_1000step_comparison/**
 
 # Editors and operating systems
 .DS_Store

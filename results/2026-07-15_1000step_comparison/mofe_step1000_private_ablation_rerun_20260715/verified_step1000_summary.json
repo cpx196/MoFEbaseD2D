@@ -1,0 +1,25 @@
+{
+  "global_step": 1000,
+  "checkpoint": "/home/iot-mengshiyuan/MoFEbaseD2D/data/pxchen/checkpoints/mofe_gpt2_wikitext103_zero_core2_1000step_b4_2gpu_fixedval/final",
+  "model_state_sha256": "7766a0e79437652265a34c1fd1f3133db1fe5b75d89cb535c18293c07cf076d8",
+  "wikitext103_ppl_reduction_percent": 32.05964618677759,
+  "wikitext2_ppl_reduction_percent": 28.23132092591172,
+  "results": [
+    {
+      "configuration": "Private OFF",
+      "private_scale": 0,
+      "shared_scale": 1,
+      "wikitext103_loss": 3.4994096318880716,
+      "wikitext103_ppl": 33.09590742164718,
+      "wikitext2_ppl": 29.074785345004845
+    },
+    {
+      "configuration": "Private ON",
+      "private_scale": 1,
+      "shared_scale": 1,
+      "wikitext103_loss": 3.112869616349538,
+      "wikitext103_ppl": 22.48547659996363,
+      "wikitext2_ppl": 20.866589385736578
+    }
+  ]
+}

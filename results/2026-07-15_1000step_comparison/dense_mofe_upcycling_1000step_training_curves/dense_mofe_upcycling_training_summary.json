@@ -1,0 +1,34 @@
+{
+  "samples_per_model": 201,
+  "logging_interval_steps": 5,
+  "effective_batch_samples": 32,
+  "rolling_steps": 50,
+  "final_raw": {
+    "dense": {
+      "loss": 3.471629410982132,
+      "ppl": 32.18914909020952
+    },
+    "mofe": {
+      "loss": 3.246797055006027,
+      "ppl": 25.70786702563646
+    },
+    "upcycling": {
+      "loss": 3.4628488421440125,
+      "ppl": 31.9077472926761
+    }
+  },
+  "final_smoothed": {
+    "dense": {
+      "loss": 3.5110087603330618,
+      "ppl": 33.48202609385426
+    },
+    "mofe": {
+      "loss": 3.3033202588558206,
+      "ppl": 27.20280951215375
+    },
+    "upcycling": {
+      "loss": 3.499223980307579,
+      "ppl": 33.08976368444142
+    }
+  }
+}

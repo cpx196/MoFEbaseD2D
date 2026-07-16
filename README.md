@@ -1,10 +1,14 @@
 # MoFEbaseD2D
 
 本仓库基于 [D2DMoE](https://github.com/bartwojcik/D2DMoE) 开展 GPT-2
-实验，目前包含两部分工作：可复现的 GPT-2 Small dense 基线，以及在其最后
-3 个 Transformer block 上构建的 MoFE（Mixture of Factorized Experts）方法。
+实验，目前包含三部分工作：可复现的 GPT-2 Small dense 基线、在其最后
+3 个 Transformer block 上构建的 MoFE（Mixture of Factorized Experts），以及
+将最后 3 个 FFN 替换为 16 个完整复制专家的 Sparse Upcycling 对照。
 
 当前公开仓库：<https://github.com/cpx196/MoFEbaseD2D>
+
+跨会话继续项目时先阅读 [HANDOFF.md](HANDOFF.md)。该文件汇总了关键代码改动、
+实验结果、外部 checkpoint 路径、已知方法问题和下一步，不包含原始对话或凭据。
 
 ## 时间线
 
@@ -202,21 +206,118 @@ validation loss。
 
 ![MoFE GPT-2 100-step total loss](results/mofe_gpt2_zero_core2_100step/figures/training_total_loss.png)
 
+### 2026-07-15
+
+#### 建立匹配的 1000-step 固定验证对照
+
+- 修复训练日志只记录 rank 0 最后一个 microbatch 的问题。当前训练 loss 是两卡、
+  4 次梯度累积组成的完整 effective batch 32 平均值。
+- 固定 WikiText-103 validation 为 240 条 1024-token 序列，共 245,520 个预测
+  token；Dense、MoFE 和 Upcycling 使用相同 validation、数据顺序、effective
+  batch、学习率与 optimizer steps。
+- 三个实验均使用 10-step LR warmup，之后保持常数学习率 `1e-5`。
+
+Step-1000 固定验证结果：
+
+| 模型 | 参数量 | Validation loss | Perplexity |
+| --- | ---: | ---: | ---: |
+| Dense GPT-2 | 124,439,808 | 3.315577 | 27.5383 |
+| MoFE E16 K3 | 209,595,696 | **3.113023** | **22.4889** |
+| Sparse Upcycling E16 K3 | 336,986,160 | 3.316069 | 27.5518 |
+
+![Step-1000 loss and PPL comparison](results/2026-07-15_1000step_comparison/dense_mofe_upcycling_1000step_fixedval/figures/dense_mofe_upcycling_loss_ppl.png)
+
+每个训练日志包含 201 个 effective-batch 采样点（step 1，之后每 5 steps）。
+浅色线为原始采样，粗线为 50-step moving average：
+
+![1000-step training loss and PPL](results/2026-07-15_1000step_comparison/dense_mofe_upcycling_1000step_training_curves/figures/dense_mofe_upcycling_training_loss_ppl.png)
+
+#### 完成 MoFE private 分支消融
+
+在同一个 step-1000 checkpoint 上只将 private output scale 从 1 设为 0，shared
+分支和 GPT-2 其余主干保持不变：
+
+| 配置 | WT103 fixed loss | WT103 PPL | WT2 PPL |
+| --- | ---: | ---: | ---: |
+| Private OFF | 3.499410 | 33.0959 | 29.0748 |
+| Private ON | **3.112870** | **22.4855** | **20.8666** |
+
+Private ON 相对 OFF 将 WT103 PPL 降低 32.06%，将 WT2 PPL 降低 28.23%。该
+差值证明 private 输出有预测贡献，但不能直接解释为参数贡献百分比。
+
+![Private branch ablation](results/2026-07-15_1000step_comparison/mofe_step1000_private_ablation_rerun_20260715/figures/verified_step1000_private_off_vs_on.png)
+
+#### 增加 Sparse Upcycling 对照
+
+- 将 block 9、10、11 的原 FFN 分别替换为 16 个完整参数副本，不保留额外
+  shared FFN。
+- Token-choice router 选择 top-3，top-k 权重归一化后聚合；step-0 固定验证
+  loss 为 3.430742，与 Dense 起点保持一致。
+- 双卡、每卡 batch 4、gradient accumulation 4，训练 1000 optimizer steps；
+  吞吐约 39.1k tokens/s，PyTorch peak allocated memory 为 11.09 GiB/卡。
+- `step_001000` 保存模型、AdamW、scheduler 和两卡 RNG state，可继续训练；
+  `final` 保存独立评测权重。
+
+当前 1000-step 预算下 Upcycling 与 Dense 基本持平。训练后完整复制专家之间的
+相对参数分化仅约 0.11%--0.15%，说明额外容量尚未充分展开；该现象需要更长
+continued pretraining、更多样的数据和进一步 router 消融验证。
+
+### 2026-07-16
+
+#### 整理离线打包目录
+
+- GitHub HTTPS push 因当前网络环境的 GnuTLS handshake 失败，改为直接打包
+  下载源码仓库。
+- checkpoint、数据集、Hugging Face cache、训练日志和完整评测 artifacts 均未
+  删除，已整体移动到仓库同级目录
+  `/home/iot-mengshiyuan/MoFEbaseD2D_data/`。
+- 仓库内只保留约 1 MB 的关键图表、CSV、JSON 和 Markdown 汇总，源码仓库
+  从约 28 GB 降至约 4.3 MB。
+- 清理 `__pycache__` 等可再生成文件；上游 D2DMoE 源码只有约 2 MB，继续保留
+  以维持来源、许可和实现参考，不为节省极少空间破坏代码结构。
+
 ## 当前状态
 
-已经完成 dense 基线、MoFE 架构代码、未训练 no-warmup 对照、WikiText-103
-数据链路、稳定初始化和 4 卡 100-step 工程训练。零输出 core 版本在短程训练中
-保持 loss 稳定并成功训练 private 分支，但尚未完成独立 validation perplexity、
-六项 zero-shot 评测及相同 token 预算的 dense/upcycling MoE 对照，因此不能将
-该工程结果解释为最终方法收益。
+目前已完成：
 
-下一阶段顺序为：
+1. Dense、MoFE、Sparse Upcycling 三种模型的匹配 1000-step 训练。
+2. 跨卡、跨梯度累积的正确训练 loss 聚合，以及固定 WikiText-103 validation。
+3. MoFE step-3000 continued-training checkpoint 与既有 zero-shot 评测。
+4. MoFE step-1000 private ON/OFF 消融和 WikiText-2 PPL 对照。
+5. Upcycling 模型转换、checkpoint、可续训状态、单元测试和结果曲线。
 
-1. 在 WikiText-2 validation 和六项 zero-shot 任务上评测 step-100 checkpoint。
-2. 增加独立 validation loss，并据此选择 checkpoint，而不是使用训练 loss。
-3. 以相同 token 数、数据顺序和有效 batch 运行 dense 与 dense upcycling MoE。
-4. 根据验证结果决定是否扩大训练步数并补充 3 个随机种子。
-5. 绘制 validation perplexity、expert usage、router entropy 和对照训练曲线。
+当前主要结论是：在相同 1000 optimizer steps 和 effective batch 32 下，MoFE
+明显优于 Dense；完整复制的 Upcycling 尚未优于 Dense。下一阶段计划使用更
+多样的 FineWeb/FineWeb-Edu continued-pretraining 数据，并增加 router shuffle、
+专家分化和多随机种子实验。
+
+## 数据与 Checkpoint
+
+大型文件不包含在离线源码包中。服务器当前布局为：
+
+```text
+/home/iot-mengshiyuan/
+├── MoFEbaseD2D/          # 源码、README、关键小型结果
+└── MoFEbaseD2D_data/     # 28 GB 数据、cache、checkpoint、完整日志
+    └── pxchen/
+        ├── checkpoints/
+        ├── datasets/
+        ├── hf/
+        ├── hf_models/
+        ├── results/
+        └── runs/
+```
+
+在服务器继续实验时建议设置：
+
+```bash
+export DATA_ROOT=/home/iot-mengshiyuan/MoFEbaseD2D_data/pxchen
+export HF_HOME="$DATA_ROOT/hf"
+export HF_DATASETS_CACHE="$HF_HOME/datasets"
+```
+
+源码包内的 [data/README.md](data/README.md) 记录了外部 artifacts 位置。下载到
+其他机器后，需要单独复制所需 checkpoint/数据，或修改命令中的绝对路径。
 
 ## 主要文件
 
@@ -225,6 +326,9 @@ validation loss。
 | `MoFE/layer.py` | Shared expert、factorized private experts 和路由前向 |
 | `MoFE/modeling.py` | GPT-2 block 替换、损失、统计和参数量 |
 | `MoFE/train.py` | 默认 200-step 的通用训练入口 |
+| `MoFE/train_dense.py` | 匹配超参数的 Dense 训练入口 |
+| `MoFE/upcycling.py` | 完整 FFN 复制的 Sparse Upcycling 层和 checkpoint |
+| `MoFE/train_upcycling.py` | Sparse Upcycling 分布式训练入口 |
 | `MoFE/validate_initialization.py` | 真实 GPT-2 初始化报告 |
 | `MoFE/eval_no_warmup.py` | 未训练、无 warmup MoFE 的 lm-eval 入口 |
 | `MoFE/plot_no_warmup_comparison.py` | Dense/MoFE 对比 CSV 与柱状图 |
@@ -235,17 +339,17 @@ validation loss。
 | `moe_block/` | 构建 MoFE 时参考的原始实现 |
 | `D2Dinstr/` | Dense 基线和 MoFE 实验任务说明 |
 
-运行离线测试：
+运行离线测试（当前共 11 项）：
 
 ```bash
-python -m unittest MoFE.tests.test_mofe
+python -m unittest MoFE.tests.test_mofe MoFE.tests.test_upcycling
 ```
 
-本次 100-step 工程训练的核心参数：
+历史 100-step 工程训练的核心参数（数据现位于外部 `$DATA_ROOT`）：
 
 ```bash
 accelerate launch --num_processes 4 -m MoFE.train \
-  --train-file ./data/pxchen/datasets/wikitext103/train.jsonl \
+  --train-file "$DATA_ROOT/datasets/wikitext103/train.jsonl" \
   --text-column text \
   --per-device-batch-size 4 \
   --gradient-accumulation-steps 2 \

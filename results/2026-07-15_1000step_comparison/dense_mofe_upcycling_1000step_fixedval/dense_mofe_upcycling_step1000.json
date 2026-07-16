@@ -1,0 +1,31 @@
+{
+  "step": 1000,
+  "validation_token_count": 245520,
+  "validation_sample_count": 240,
+  "models": [
+    {
+      "model": "Dense",
+      "step": 1000,
+      "validation_loss": 3.315577495098114,
+      "perplexity": 27.53829262243376,
+      "token_count": 245520,
+      "sample_count": 240
+    },
+    {
+      "model": "MoFE",
+      "step": 1000,
+      "validation_loss": 3.113023026784261,
+      "perplexity": 22.48892637131248,
+      "token_count": 245520,
+      "sample_count": 240
+    },
+    {
+      "model": "Upcycling",
+      "step": 1000,
+      "validation_loss": 3.3160685936609906,
+      "perplexity": 27.551819959720792,
+      "token_count": 245520,
+      "sample_count": 240
+    }
+  ]
+}

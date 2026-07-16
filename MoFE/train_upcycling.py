@@ -2,18 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
-import random
 import time
-from itertools import chain
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from accelerate import Accelerator, DataLoaderConfiguration, DistributedDataParallelKwargs
-from datasets import Dataset, load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
@@ -24,216 +19,81 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
-from MoFE.checkpoint import save_mofe_checkpoint
-from MoFE.config import MoFEConfig
-from MoFE.modeling import (
-    collect_mofe_losses,
-    convert_gpt2_to_mofe,
-    iter_mofe_layers,
-    parameter_breakdown,
-    set_private_scale,
+from MoFE.train import (
+    checkpoint_step,
+    evaluate_validation_loss,
+    load_training_dataset,
+    set_seed,
+    weighted_loss_payload,
+)
+from MoFE.upcycling import (
+    UpcyclingConfig,
+    collect_upcycling_losses,
+    convert_gpt2_to_upcycling,
+    iter_upcycling_layers,
+    save_upcycling_checkpoint,
+    upcycling_parameter_breakdown,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    data_root = Path(os.environ.get("DATA_ROOT", "./data/pxchen"))
     parser = argparse.ArgumentParser(
-        description="Train GPT-2 MoFE for a short, dataset-agnostic 200-step run."
+        description="Train a GPT-2 Sparse Upcycling model."
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--dataset-name", help="Hugging Face dataset repository name")
-    source.add_argument("--train-file", help="Local .txt, .json, or .jsonl training file")
-    parser.add_argument("--dataset-config")
-    parser.add_argument("--train-split", default="train")
+    parser.add_argument("--train-file", required=True)
     parser.add_argument("--text-column", default="text")
-    parser.add_argument("--model-name-or-path", default="openai-community/gpt2")
-    parser.add_argument(
-        "--mofe-config",
-        default=str(Path(__file__).parent / "configs" / "mofe_gpt2_last3_e16_k3.json"),
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=str(data_root / "checkpoints" / "mofe_gpt2_last3_e16_k3"),
-    )
+    parser.add_argument("--model-name-or-path", required=True)
+    parser.add_argument("--upcycling-config", required=True)
+    parser.add_argument("--output-dir", required=True)
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--per-device-batch-size", type=int, default=4)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
-    parser.add_argument("--max-steps", type=int, default=200)
-    parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--max-steps", type=int, required=True)
+    parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--warmup-steps", type=int, default=20)
+    parser.add_argument("--warmup-steps", type=int, default=10)
     parser.add_argument(
-        "--scheduler", choices=("cosine", "constant"), default="cosine"
-    )
-    parser.add_argument(
-        "--private-warmup-steps",
-        type=int,
-        default=200,
-        help="Linearly increase the private branch scale from 0 to its configured value.",
+        "--scheduler", choices=("cosine", "constant"), required=True
     )
     parser.add_argument("--logging-steps", type=int, default=5)
     parser.add_argument("--validation-file")
     parser.add_argument("--validation-steps", type=int, default=100)
-    parser.add_argument("--save-steps", type=int, default=100)
+    parser.add_argument("--save-steps", type=int, default=1000)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume-from-checkpoint")
-    parser.add_argument(
-        "--restart-scheduler-on-resume",
-        action="store_true",
-        help=(
-            "Restore model and optimizer state, but start a new warmup/constant "
-            "schedule for the remaining steps."
-        ),
-    )
+    parser.set_defaults(dataset_name=None, dataset_config=None, train_split="train")
     return parser.parse_args()
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def weighted_loss_payload(
-    losses: tuple[torch.Tensor, ...], sample_count: int
-) -> torch.Tensor:
-    """Pack sample-weighted loss sums and their sample count for reduction."""
-    if sample_count <= 0:
-        raise ValueError("sample_count must be positive")
-    values = torch.stack([value.detach().to(dtype=torch.float64) for value in losses])
-    count = values.new_tensor([sample_count])
-    return torch.cat((values * count, count))
-
-
-@torch.no_grad()
-def evaluate_validation_loss(
-    accelerator: Accelerator,
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-) -> dict[str, float | int]:
-    was_training = model.training
-    model.eval()
-    local_totals = torch.zeros(3, dtype=torch.float64, device=accelerator.device)
-    for batch in dataloader:
-        outputs = model(**batch)
-        labels = batch["labels"]
-        valid_tokens = (labels[:, 1:] != -100).sum()
-        local_totals[0] += outputs.loss.detach().double() * valid_tokens
-        local_totals[1] += valid_tokens
-        local_totals[2] += labels.shape[0]
-
-    totals = accelerator.reduce(local_totals, reduction="sum")
-    if totals[1] <= 0:
-        raise ValueError("validation dataset contains no predicted tokens")
-    mean_loss = (totals[0] / totals[1]).item()
-    if was_training:
-        model.train()
-    return {
-        "lm_loss": mean_loss,
-        "perplexity": math.exp(mean_loss),
-        "token_count": int(totals[1].item()),
-        "sample_count": int(totals[2].item()),
-    }
-
-
-def load_training_dataset(args: argparse.Namespace, tokenizer: Any) -> Dataset:
-    cache_dir = os.environ.get("HF_DATASETS_CACHE")
-    text_column = args.text_column
-    block_size = args.block_size
-    if args.dataset_name:
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config,
-            split=args.train_split,
-            cache_dir=cache_dir,
+def make_scheduler(
+    name: str,
+    optimizer: torch.optim.Optimizer,
+    warmup_steps: int,
+    training_steps: int,
+):
+    if name == "cosine":
+        return get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=training_steps,
         )
-    else:
-        suffix = Path(args.train_file).suffix.lower()
-        loader = "text" if suffix == ".txt" else "json"
-        dataset = load_dataset(
-            loader,
-            data_files={"train": args.train_file},
-            split="train",
-            cache_dir=cache_dir,
-        )
-    if text_column not in dataset.column_names:
-        raise ValueError(
-            f"text column {text_column!r} is absent; available columns: "
-            f"{dataset.column_names}"
-        )
-
-    remove_columns = dataset.column_names
-
-    def tokenize(batch: dict[str, list[Any]]) -> dict[str, list[list[int]]]:
-        texts = [str(value) for value in batch[text_column]]
-        return tokenizer(texts, add_special_tokens=False)
-
-    tokenized = dataset.map(
-        tokenize,
-        batched=True,
-        remove_columns=remove_columns,
-        desc="Tokenizing training data",
+    return get_constant_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
     )
-
-    def group_texts(batch: dict[str, list[list[int]]]) -> dict[str, list[list[int]]]:
-        concatenated = {
-            key: list(chain.from_iterable(sequences))
-            for key, sequences in batch.items()
-        }
-        total_length = len(concatenated["input_ids"])
-        total_length = (total_length // block_size) * block_size
-        return {
-            key: [
-                values[index : index + block_size]
-                for index in range(0, total_length, block_size)
-            ]
-            for key, values in concatenated.items()
-        }
-
-    grouped = tokenized.map(
-        group_texts,
-        batched=True,
-        desc=f"Packing {block_size}-token sequences",
-    )
-    if len(grouped) == 0:
-        raise ValueError("dataset contains fewer tokens than one block")
-    return grouped
-
-
-def private_scale_for_step(
-    step: int, warmup_steps: int, target_scale: float
-) -> float:
-    if warmup_steps <= 0:
-        return target_scale
-    return target_scale * min(1.0, step / warmup_steps)
-
-
-def checkpoint_step(checkpoint: str | None) -> int:
-    if not checkpoint:
-        return 0
-    checkpoint_name = Path(checkpoint).name
-    if not checkpoint_name.startswith("step_"):
-        raise ValueError(
-            "resume checkpoint directory must be named step_NNNNNN so the global "
-            "step can be restored"
-        )
-    return int(checkpoint_name.removeprefix("step_"))
 
 
 def distributed_routing_statistics(
     accelerator: Accelerator, model: torch.nn.Module
 ) -> dict[str, dict[str, Any]]:
     statistics: dict[str, dict[str, Any]] = {}
-    for name, layer in iter_mofe_layers(accelerator.unwrap_model(model)):
+    for name, layer in iter_upcycling_layers(accelerator.unwrap_model(model)):
         state = layer.routing_state
         if state is None:
             continue
         counts = accelerator.reduce(state.assignment_counts, reduction="sum").float()
         entropy = accelerator.reduce(state.router_entropy, reduction="mean")
-        shared_norm = accelerator.reduce(state.shared_output_norm, reduction="mean")
-        private_norm = accelerator.reduce(state.private_output_norm, reduction="mean")
         mean = counts.mean()
         nonzero = counts[counts > 0]
         min_nonzero = nonzero.min() if nonzero.numel() else counts.new_tensor(0.0)
@@ -250,20 +110,14 @@ def distributed_routing_statistics(
             ).item(),
             "router_entropy": entropy.item(),
             "unused_experts": int((counts == 0).sum().item()),
-            "shared_output_norm": shared_norm.item(),
-            "private_output_norm": private_norm.item(),
-            "private_to_shared_norm": (
-                private_norm / shared_norm.clamp_min(1e-12)
-            ).item(),
         }
     return statistics
 
 
 def save_training_state(
     accelerator: Accelerator,
-    model: torch.nn.Module,
     tokenizer: Any,
-    config: MoFEConfig,
+    config: UpcyclingConfig,
     output_dir: Path,
     global_step: int,
     args: argparse.Namespace,
@@ -271,12 +125,11 @@ def save_training_state(
     state_dir = output_dir / f"step_{global_step:06d}"
     accelerator.save_state(state_dir)
     if accelerator.is_main_process:
-        unwrapped = accelerator.unwrap_model(model)
         config.save_pretrained(state_dir)
+        tokenizer.save_pretrained(state_dir)
         (state_dir / "run_config.json").write_text(
             json.dumps(vars(args), indent=2) + "\n"
         )
-        tokenizer.save_pretrained(state_dir)
 
 
 def main() -> None:
@@ -284,26 +137,24 @@ def main() -> None:
     if args.max_steps <= 0:
         raise ValueError("max_steps must be positive")
     if args.per_device_batch_size <= 0:
-        raise ValueError("per_device_batch_size must be positive")
+        raise ValueError("per-device batch size must be positive")
     if args.gradient_accumulation_steps <= 0:
-        raise ValueError("gradient_accumulation_steps must be positive")
+        raise ValueError("gradient accumulation steps must be positive")
     if args.validation_steps <= 0:
-        raise ValueError("validation_steps must be positive")
+        raise ValueError("validation steps must be positive")
     resume_step = checkpoint_step(args.resume_from_checkpoint)
-    if args.restart_scheduler_on_resume and not args.resume_from_checkpoint:
-        raise ValueError("--restart-scheduler-on-resume requires a checkpoint")
     if resume_step >= args.max_steps:
         raise ValueError(
             f"checkpoint step {resume_step} must be lower than max steps {args.max_steps}"
         )
+
     set_seed(args.seed)
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision="bf16",
         step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(even_batches=False),
-        kwargs_handlers=[ddp_kwargs],
+        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
     )
     effective_batch_size = (
         args.per_device_batch_size
@@ -312,30 +163,28 @@ def main() -> None:
     )
     accelerator.print(
         "training_config "
-        f"num_processes={accelerator.num_processes} "
+        f"model=sparse_upcycling num_processes={accelerator.num_processes} "
         f"per_device_batch_size={args.per_device_batch_size} "
         f"gradient_accumulation_steps={args.gradient_accumulation_steps} "
         f"effective_batch_size={effective_batch_size} "
         f"tokens_per_optimizer_step={effective_batch_size * args.block_size}",
         flush=True,
     )
+
     output_dir = Path(args.output_dir)
     if accelerator.is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
-
-    config = MoFEConfig.from_json_file(args.mofe_config)
+    config = UpcyclingConfig.from_json_file(args.upcycling_config)
     config.model_name_or_path = args.model_name_or_path
     config.seed = args.seed
-    cache_dir = os.environ.get("HF_HOME")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path, cache_dir=cache_dir
+        args.model_name_or_path, cache_dir=os.environ.get("HF_HOME")
     )
     tokenizer.pad_token = tokenizer.eos_token
     with accelerator.main_process_first():
         dataset = load_training_dataset(args, tokenizer)
         if args.validation_file:
             validation_args = argparse.Namespace(**vars(args))
-            validation_args.dataset_name = None
             validation_args.train_file = args.validation_file
             validation_dataset = load_training_dataset(validation_args, tokenizer)
         else:
@@ -371,81 +220,53 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
-        cache_dir=cache_dir,
+        cache_dir=os.environ.get("HF_HOME"),
         dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     )
-    convert_gpt2_to_mofe(model, config)
-    target_private_scale = config.private_output_scale
-    set_private_scale(model, private_scale_for_step(0, args.private_warmup_steps, target_private_scale))
-
+    convert_gpt2_to_upcycling(model, config)
     optimizer = AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
-    if args.restart_scheduler_on_resume:
-        if validation_dataloader is None:
-            model, optimizer, dataloader = accelerator.prepare(
-                model, optimizer, dataloader
-            )
-        else:
-            model, optimizer, dataloader, validation_dataloader = accelerator.prepare(
-                model, optimizer, dataloader, validation_dataloader
-            )
-        accelerator.load_state(args.resume_from_checkpoint)
-        for parameter_group in optimizer.param_groups:
-            parameter_group["lr"] = args.learning_rate
-            parameter_group["initial_lr"] = args.learning_rate
-        raw_optimizer = getattr(optimizer, "optimizer", optimizer)
-        scheduler = get_constant_schedule_with_warmup(
-            raw_optimizer,
-            num_warmup_steps=args.warmup_steps,
-        )
-        scheduler = accelerator.prepare_scheduler(scheduler)
-        accelerator.print(
-            "resume_scheduler "
-            f"checkpoint_step={resume_step} remaining_steps={args.max_steps - resume_step} "
-            f"peak_learning_rate={args.learning_rate:.3e} "
-            f"warmup_steps={args.warmup_steps}",
-            flush=True,
+    scheduler = make_scheduler(
+        args.scheduler, optimizer, args.warmup_steps, args.max_steps
+    )
+    if validation_dataloader is None:
+        model, optimizer, dataloader, scheduler = accelerator.prepare(
+            model, optimizer, dataloader, scheduler
         )
     else:
-        if args.scheduler == "constant":
-            scheduler = get_constant_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=args.warmup_steps,
-            )
-        else:
-            scheduler = get_cosine_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=args.warmup_steps,
-                num_training_steps=args.max_steps,
-            )
-        if validation_dataloader is None:
-            model, optimizer, dataloader, scheduler = accelerator.prepare(
-                model, optimizer, dataloader, scheduler
-            )
-        else:
-            (
-                model,
-                optimizer,
-                dataloader,
-                validation_dataloader,
-                scheduler,
-            ) = accelerator.prepare(
-                model, optimizer, dataloader, validation_dataloader, scheduler
-            )
-        if args.resume_from_checkpoint:
-            accelerator.load_state(args.resume_from_checkpoint)
+        (
+            model,
+            optimizer,
+            dataloader,
+            validation_dataloader,
+            scheduler,
+        ) = accelerator.prepare(
+            model, optimizer, dataloader, validation_dataloader, scheduler
+        )
+    if args.resume_from_checkpoint:
+        accelerator.load_state(args.resume_from_checkpoint)
     global_step = resume_step
 
+    accelerator.print(
+        "schedule_config "
+        f"resume_step={resume_step} scheduler={args.scheduler} "
+        f"peak_learning_rate={args.learning_rate:.3e} "
+        f"warmup_steps={args.warmup_steps}",
+        flush=True,
+    )
     if accelerator.is_main_process:
         config.save_pretrained(output_dir)
         (output_dir / "run_config.json").write_text(
             json.dumps(vars(args), indent=2) + "\n"
         )
         (output_dir / "parameter_breakdown.json").write_text(
-            json.dumps(parameter_breakdown(accelerator.unwrap_model(model)), indent=2)
+            json.dumps(
+                upcycling_parameter_breakdown(accelerator.unwrap_model(model)),
+                indent=2,
+            )
             + "\n"
         )
 
@@ -458,17 +279,12 @@ def main() -> None:
     def log_validation(step: int) -> None:
         if validation_dataloader is None:
             return
-        scale = private_scale_for_step(
-            step, args.private_warmup_steps, target_private_scale
-        )
-        set_private_scale(model, scale)
         result = evaluate_validation_loss(accelerator, model, validation_dataloader)
-        record = {"step": step, "private_scale": scale, **result}
+        record = {"step": step, **result}
         accelerator.print(
             f"validation step={step:06d}/{args.max_steps:06d} "
             f"lm_loss={record['lm_loss']:.6f} ppl={record['perplexity']:.4f} "
-            f"samples={record['sample_count']} tokens={record['token_count']} "
-            f"private_scale={scale:.4f}",
+            f"samples={record['sample_count']} tokens={record['token_count']}",
             flush=True,
         )
         if accelerator.is_main_process:
@@ -480,14 +296,10 @@ def main() -> None:
     while global_step < args.max_steps:
         for batch in dataloader:
             tokens_seen += batch["input_ids"].numel() * accelerator.num_processes
-            scale = private_scale_for_step(
-                global_step, args.private_warmup_steps, target_private_scale
-            )
-            set_private_scale(model, scale)
             gradient_norm = None
             with accelerator.accumulate(model):
                 outputs = model(**batch)
-                aux_losses = collect_mofe_losses(model)
+                aux_losses = collect_upcycling_losses(model)
                 loss = (
                     outputs.loss
                     + config.router_aux_loss_coef * aux_losses["balance_loss"]
@@ -508,7 +320,9 @@ def main() -> None:
                     loss_accumulator += microbatch_losses
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    gradient_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                    gradient_norm = accelerator.clip_grad_norm_(
+                        model.parameters(), 1.0
+                    )
                 optimizer.step()
                 if accelerator.sync_gradients and not optimizer.step_was_skipped:
                     scheduler.step()
@@ -524,10 +338,10 @@ def main() -> None:
             if global_step % args.logging_steps == 0 or global_step == 1:
                 elapsed = time.perf_counter() - started
                 if torch.cuda.is_available():
-                    local_peak_memory = torch.tensor(
+                    local_peak = torch.tensor(
                         [torch.cuda.max_memory_allocated()], device=accelerator.device
                     )
-                    peak_memory = accelerator.gather(local_peak_memory).max().item()
+                    peak_memory = accelerator.gather(local_peak).max().item()
                 else:
                     peak_memory = 0
                 routing = distributed_routing_statistics(accelerator, model)
@@ -540,23 +354,23 @@ def main() -> None:
                     "effective_batch_samples": effective_batch_samples,
                     "gradient_norm": float(gradient_norm.detach()),
                     "learning_rate": scheduler.get_last_lr()[0],
-                    "private_scale": scale,
                     "elapsed_seconds": elapsed,
                     "tokens_per_second": tokens_seen / max(elapsed, 1e-9),
                     "peak_memory_bytes": int(peak_memory),
                     "routing": routing,
                 }
                 routing_summary = " ".join(
-                    f"h{name.split('.')[2]}:ratio={stats['private_to_shared_norm']:.2f},"
-                    f"cv={stats['load_cv']:.2f}"
+                    f"h{name.split('.')[2]}:cv={stats['load_cv']:.2f},"
+                    f"unused={stats['unused_experts']}"
                     for name, stats in routing.items()
                 )
                 accelerator.print(
                     f"step={global_step:06d}/{args.max_steps:06d} "
-                    f"lm_loss={record['lm_loss']:.4f} total_loss={record['total_loss']:.4f} "
+                    f"lm_loss={record['lm_loss']:.4f} "
+                    f"total_loss={record['total_loss']:.4f} "
                     f"batch_samples={effective_batch_samples} "
                     f"grad_norm={record['gradient_norm']:.3f} "
-                    f"lr={record['learning_rate']:.3e} private_scale={scale:.4f} "
+                    f"lr={record['learning_rate']:.3e} "
                     f"tokens_per_second={record['tokens_per_second']:.0f} "
                     f"peak_memory_gib={peak_memory / 2**30:.2f} | {routing_summary}",
                     flush=True,
@@ -568,7 +382,6 @@ def main() -> None:
             if global_step % args.save_steps == 0:
                 save_training_state(
                     accelerator,
-                    model,
                     tokenizer,
                     config,
                     output_dir,
@@ -584,11 +397,9 @@ def main() -> None:
                 break
 
     accelerator.wait_for_everyone()
-    set_private_scale(model, target_private_scale)
     if accelerator.is_main_process:
-        unwrapped = accelerator.unwrap_model(model)
-        save_mofe_checkpoint(
-            unwrapped,
+        save_upcycling_checkpoint(
+            accelerator.unwrap_model(model),
             output_dir / "final",
             config,
             tokenizer=tokenizer,

@@ -7,6 +7,7 @@ from .modeling import (
     iter_mofe_layers,
     parameter_breakdown,
     set_private_scale,
+    shared_scale,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "parameter_breakdown",
     "save_mofe_checkpoint",
     "set_private_scale",
+    "shared_scale",
 ]

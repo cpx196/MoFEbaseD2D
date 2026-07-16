@@ -49,6 +49,28 @@ def set_private_scale(model: nn.Module, value: float) -> None:
         layer.set_private_scale(value)
 
 
+@contextlib.contextmanager
+def shared_scale(model: nn.Module, value: float) -> Iterator[None]:
+    """Temporarily scale each MoFE shared expert output for evaluation ablations."""
+    if value < 0:
+        raise ValueError("shared scale must be non-negative")
+    layers = list(iter_mofe_layers(model))
+    if not layers:
+        raise ValueError("model has no MoFE layers")
+
+    def scale_output(_module: nn.Module, _inputs: tuple[Tensor, ...], output: Tensor) -> Tensor:
+        return output * value
+
+    handles = [
+        layer.shared_expert.register_forward_hook(scale_output) for _, layer in layers
+    ]
+    try:
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
 def collect_mofe_losses(model: nn.Module) -> dict[str, Tensor]:
     states = []
     for _, layer in iter_mofe_layers(model):

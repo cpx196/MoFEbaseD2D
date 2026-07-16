@@ -1,0 +1,18 @@
+{
+  "initial_step": 0,
+  "final_step": 1000,
+  "warmup_steps": 10,
+  "validation_sample_count": 240,
+  "validation_token_count": 245520,
+  "initial_loss": 3.430742390950521,
+  "post_warmup_reference_step": 100,
+  "post_warmup_reference_kind": "first_post_warmup_validation",
+  "post_warmup_reference_loss": 3.3952525695165,
+  "final_loss": 3.3160685936609906,
+  "loss_change_total": -0.1146737972895302,
+  "loss_change_after_post_warmup_reference": -0.07918397585550929,
+  "initial_perplexity": 30.89957380068605,
+  "post_warmup_reference_perplexity": 29.82218469858957,
+  "final_perplexity": 27.551819959720792,
+  "perplexity_change_percent_total": -10.834304261151095
+}

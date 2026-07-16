@@ -1,0 +1,10 @@
+{
+  "model_name_or_path": "/home/iot-mengshiyuan/MoFEbaseD2D/data/pxchen/hf_models/gpt2",
+  "moe_layer_indices": [9, 10, 11],
+  "num_experts": 16,
+  "top_k": 3,
+  "router_init_std": 0.02,
+  "router_aux_loss_coef": 0.01,
+  "router_z_loss_coef": 0.001,
+  "seed": 42
+}

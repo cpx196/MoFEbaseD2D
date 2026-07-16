@@ -76,7 +76,7 @@ def main() -> None:
         textcoords="offset points",
         fontsize=9,
     )
-    ax.set_title("MoFE GPT-2: 100-Step Training Loss")
+    ax.set_title(f"MoFE GPT-2: {max(steps)}-Step Training Loss")
     ax.set_xlabel("Optimizer step")
     ax.set_ylabel("Total loss")
     ax.set_xlim(0, max(steps) + 2)
