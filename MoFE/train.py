@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import torch
 from accelerate import Accelerator, DataLoaderConfiguration, DistributedDataParallelKwargs
-from datasets import Dataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
@@ -42,10 +42,20 @@ def parse_args() -> argparse.Namespace:
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--dataset-name", help="Hugging Face dataset repository name")
-    source.add_argument("--train-file", help="Local .txt, .json, or .jsonl training file")
+    source.add_argument(
+        "--train-file",
+        help="Local .txt/.json/.jsonl/.parquet file or directory of Parquet shards",
+    )
     parser.add_argument("--dataset-config")
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--text-column", default="text")
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Stream dataset rows instead of materializing preprocessing caches.",
+    )
+    parser.add_argument("--shuffle-buffer-size", type=int, default=2_048)
+    parser.add_argument("--preprocessing-batch-size", type=int, default=64)
     parser.add_argument("--model-name-or-path", default="openai-community/gpt2")
     parser.add_argument(
         "--mofe-config",
@@ -60,6 +70,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=200)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument(
+        "--shared-learning-rate",
+        type=float,
+        help="Learning rate for the GPT-2 backbone and MoFE shared experts.",
+    )
+    parser.add_argument(
+        "--private-learning-rate",
+        type=float,
+        help="Learning rate for MoFE factor banks, cores, and private biases.",
+    )
+    parser.add_argument(
+        "--router-learning-rate",
+        type=float,
+        help="Learning rate for MoFE router parameters.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--warmup-steps", type=int, default=20)
     parser.add_argument(
@@ -96,6 +121,51 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def mofe_optimizer_groups(
+    model: torch.nn.Module,
+    base_learning_rate: float,
+    shared_learning_rate: float | None,
+    private_learning_rate: float | None,
+    router_learning_rate: float | None,
+) -> list[dict[str, Any]]:
+    shared_lr = shared_learning_rate or base_learning_rate
+    private_lr = private_learning_rate or base_learning_rate
+    router_lr = router_learning_rate or base_learning_rate
+
+    private_parameters: list[torch.nn.Parameter] = []
+    router_parameters: list[torch.nn.Parameter] = []
+    assigned: set[int] = set()
+    for _, layer in iter_mofe_layers(model):
+        for parameter in (layer.a1, layer.b1, layer.a2, layer.b2):
+            if parameter.requires_grad:
+                private_parameters.append(parameter)
+                assigned.add(id(parameter))
+        for parameter in (layer.core1, layer.core2):
+            if parameter.requires_grad:
+                private_parameters.append(parameter)
+                assigned.add(id(parameter))
+        for parameter in (layer.private_bias1, layer.private_bias2):
+            if parameter.requires_grad:
+                private_parameters.append(parameter)
+                assigned.add(id(parameter))
+        for parameter in layer.router.parameters():
+            if parameter.requires_grad:
+                router_parameters.append(parameter)
+                assigned.add(id(parameter))
+
+    shared_parameters = [
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in assigned
+    ]
+    groups = [
+        {"params": shared_parameters, "lr": shared_lr, "name": "shared"},
+        {"params": private_parameters, "lr": private_lr, "name": "private"},
+        {"params": router_parameters, "lr": router_lr, "name": "router"},
+    ]
+    return [group for group in groups if group["params"]]
+
+
 def weighted_loss_payload(
     losses: tuple[torch.Tensor, ...], sample_count: int
 ) -> torch.Tensor:
@@ -105,6 +175,27 @@ def weighted_loss_payload(
     values = torch.stack([value.detach().to(dtype=torch.float64) for value in losses])
     count = values.new_tensor([sample_count])
     return torch.cat((values * count, count))
+
+
+def verify_fp32_training_state(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> tuple[list[str], list[str]]:
+    parameter_dtypes = sorted({str(parameter.dtype) for parameter in model.parameters()})
+    raw_optimizer = getattr(optimizer, "optimizer", optimizer)
+    optimizer_dtypes = sorted(
+        {
+            str(value.dtype)
+            for state in raw_optimizer.state.values()
+            for value in state.values()
+            if torch.is_tensor(value) and value.is_floating_point()
+        }
+    )
+    if parameter_dtypes != ["torch.float32"]:
+        raise RuntimeError(f"expected FP32 master parameters, got {parameter_dtypes}")
+    if optimizer_dtypes != ["torch.float32"]:
+        raise RuntimeError(f"expected FP32 optimizer states, got {optimizer_dtypes}")
+    return parameter_dtypes, optimizer_dtypes
 
 
 @torch.no_grad()
@@ -138,43 +229,101 @@ def evaluate_validation_loss(
     }
 
 
-def load_training_dataset(args: argparse.Namespace, tokenizer: Any) -> Dataset:
+def resolve_local_dataset(train_file: str) -> tuple[str, str | list[str], bool]:
+    path = Path(train_file).expanduser()
+    if path.is_dir():
+        files = sorted(
+            str(candidate.resolve()) for candidate in path.glob("*.parquet")
+        )
+        if not files:
+            raise ValueError(f"Parquet directory contains no .parquet files: {path}")
+        return "parquet", files, True
+    if not path.is_file():
+        raise FileNotFoundError(f"training data does not exist: {path}")
+
+    loader_by_suffix = {
+        ".txt": "text",
+        ".json": "json",
+        ".jsonl": "json",
+        ".parquet": "parquet",
+    }
+    suffix = path.suffix.lower()
+    if suffix not in loader_by_suffix:
+        supported = ", ".join(sorted(loader_by_suffix))
+        raise ValueError(
+            f"unsupported training data suffix {suffix!r}; expected one of {supported}"
+        )
+    return loader_by_suffix[suffix], str(path.resolve()), False
+
+
+def load_training_dataset(
+    args: argparse.Namespace, tokenizer: Any
+) -> Dataset | IterableDataset:
     cache_dir = os.environ.get("HF_DATASETS_CACHE")
     text_column = args.text_column
     block_size = args.block_size
+    streaming = bool(getattr(args, "streaming", False))
+    shuffle_buffer_size = int(getattr(args, "shuffle_buffer_size", 2_048))
+    preprocessing_batch_size = int(
+        getattr(args, "preprocessing_batch_size", 64)
+    )
+    if shuffle_buffer_size <= 0:
+        raise ValueError("shuffle buffer size must be positive")
+    if preprocessing_batch_size <= 0:
+        raise ValueError("preprocessing batch size must be positive")
+
     if args.dataset_name:
         dataset = load_dataset(
             args.dataset_name,
             args.dataset_config,
             split=args.train_split,
             cache_dir=cache_dir,
+            streaming=streaming,
         )
     else:
-        suffix = Path(args.train_file).suffix.lower()
-        loader = "text" if suffix == ".txt" else "json"
+        loader, data_files, directory_streaming = resolve_local_dataset(
+            args.train_file
+        )
+        streaming = streaming or directory_streaming
+        args.streaming = streaming
         dataset = load_dataset(
             loader,
-            data_files={"train": args.train_file},
+            data_files={"train": data_files},
             split="train",
             cache_dir=cache_dir,
+            streaming=streaming,
         )
-    if text_column not in dataset.column_names:
+    columns = dataset.column_names or list(dataset.features or {})
+    if text_column not in columns:
         raise ValueError(
             f"text column {text_column!r} is absent; available columns: "
-            f"{dataset.column_names}"
+            f"{columns}"
         )
 
-    remove_columns = dataset.column_names
+    if streaming:
+        dataset = dataset.shuffle(
+            seed=args.seed,
+            buffer_size=shuffle_buffer_size,
+        )
+
+    remove_columns = columns
 
     def tokenize(batch: dict[str, list[Any]]) -> dict[str, list[list[int]]]:
         texts = [str(value) for value in batch[text_column]]
         return tokenizer(texts, add_special_tokens=False)
 
+    map_batch_kwargs = (
+        {"batch_size": preprocessing_batch_size} if streaming else {}
+    )
+    tokenize_progress_kwargs = (
+        {} if streaming else {"desc": "Tokenizing training data"}
+    )
     tokenized = dataset.map(
         tokenize,
         batched=True,
         remove_columns=remove_columns,
-        desc="Tokenizing training data",
+        **map_batch_kwargs,
+        **tokenize_progress_kwargs,
     )
 
     def group_texts(batch: dict[str, list[list[int]]]) -> dict[str, list[list[int]]]:
@@ -192,14 +341,28 @@ def load_training_dataset(args: argparse.Namespace, tokenizer: Any) -> Dataset:
             for key, values in concatenated.items()
         }
 
+    packing_progress_kwargs = (
+        {} if streaming else {"desc": f"Packing {block_size}-token sequences"}
+    )
     grouped = tokenized.map(
         group_texts,
         batched=True,
-        desc=f"Packing {block_size}-token sequences",
+        **map_batch_kwargs,
+        **packing_progress_kwargs,
     )
-    if len(grouped) == 0:
+    if not isinstance(grouped, IterableDataset) and len(grouped) == 0:
         raise ValueError("dataset contains fewer tokens than one block")
     return grouped
+
+
+def training_dataloader_num_workers(
+    dataset: Dataset | IterableDataset, requested_workers: int
+) -> int:
+    if requested_workers < 0:
+        raise ValueError("num workers must be non-negative")
+    if isinstance(dataset, IterableDataset):
+        return 0
+    return requested_workers
 
 
 def private_scale_for_step(
@@ -326,10 +489,7 @@ def main() -> None:
     config = MoFEConfig.from_json_file(args.mofe_config)
     config.model_name_or_path = args.model_name_or_path
     config.seed = args.seed
-    cache_dir = os.environ.get("HF_HOME")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path, cache_dir=cache_dir
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer.pad_token = tokenizer.eos_token
     with accelerator.main_process_first():
         dataset = load_training_dataset(args, tokenizer)
@@ -337,15 +497,23 @@ def main() -> None:
             validation_args = argparse.Namespace(**vars(args))
             validation_args.dataset_name = None
             validation_args.train_file = args.validation_file
+            validation_args.streaming = False
             validation_dataset = load_training_dataset(validation_args, tokenizer)
         else:
             validation_dataset = None
     collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    training_num_workers = training_dataloader_num_workers(dataset, args.num_workers)
+    if training_num_workers != args.num_workers:
+        accelerator.print(
+            "data_loader_config streaming=true "
+            f"requested_num_workers={args.num_workers} effective_num_workers=0",
+            flush=True,
+        )
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
+        shuffle=not isinstance(dataset, IterableDataset),
+        num_workers=training_num_workers,
         pin_memory=torch.cuda.is_available(),
         collate_fn=collator,
     )
@@ -362,24 +530,35 @@ def main() -> None:
         else None
     )
     if validation_dataset is not None:
+        validation_sequences = (
+            "streaming"
+            if isinstance(validation_dataset, IterableDataset)
+            else str(len(validation_dataset))
+        )
         accelerator.print(
             "validation_config "
-            f"file={args.validation_file} sequences={len(validation_dataset)} "
+            f"file={args.validation_file} sequences={validation_sequences} "
             f"interval_steps={args.validation_steps}",
             flush=True,
         )
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
-        cache_dir=cache_dir,
-        dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        dtype=torch.float32,
     )
     convert_gpt2_to_mofe(model, config)
     target_private_scale = config.private_output_scale
     set_private_scale(model, private_scale_for_step(0, args.private_warmup_steps, target_private_scale))
 
+    optimizer_groups = mofe_optimizer_groups(
+        model,
+        args.learning_rate,
+        args.shared_learning_rate,
+        args.private_learning_rate,
+        args.router_learning_rate,
+    )
     optimizer = AdamW(
-        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        optimizer_groups,
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
@@ -394,8 +573,9 @@ def main() -> None:
             )
         accelerator.load_state(args.resume_from_checkpoint)
         for parameter_group in optimizer.param_groups:
-            parameter_group["lr"] = args.learning_rate
-            parameter_group["initial_lr"] = args.learning_rate
+            group_lr = parameter_group.get("initial_lr", parameter_group["lr"])
+            parameter_group["lr"] = group_lr
+            parameter_group["initial_lr"] = group_lr
         raw_optimizer = getattr(optimizer, "optimizer", optimizer)
         scheduler = get_constant_schedule_with_warmup(
             raw_optimizer,
@@ -448,6 +628,15 @@ def main() -> None:
             json.dumps(parameter_breakdown(accelerator.unwrap_model(model)), indent=2)
             + "\n"
         )
+    accelerator.print(
+        "optimizer_groups "
+        + " ".join(
+            f"{group.get('name', index)}:lr={group['lr']:.3e},params="
+            f"{sum(parameter.numel() for parameter in group['params'])}"
+            for index, group in enumerate(optimizer.param_groups)
+        ),
+        flush=True,
+    )
 
     model.train()
     started = time.perf_counter()
@@ -517,6 +706,17 @@ def main() -> None:
             if not accelerator.sync_gradients:
                 continue
             global_step += 1
+            if global_step == 1:
+                parameter_dtypes, optimizer_dtypes = verify_fp32_training_state(
+                    model, optimizer
+                )
+                accelerator.print(
+                    "precision_config "
+                    f"master_parameter_dtypes={parameter_dtypes} "
+                    f"optimizer_state_dtypes={optimizer_dtypes} "
+                    f"compute_precision={accelerator.mixed_precision}",
+                    flush=True,
+                )
             reduced_losses = accelerator.reduce(loss_accumulator, reduction="sum")
             effective_batch_samples = int(reduced_losses[-1].item())
             mean_losses = reduced_losses[:-1] / reduced_losses[-1].clamp_min(1)
@@ -540,6 +740,10 @@ def main() -> None:
                     "effective_batch_samples": effective_batch_samples,
                     "gradient_norm": float(gradient_norm.detach()),
                     "learning_rate": scheduler.get_last_lr()[0],
+                    "learning_rates": {
+                        str(group.get("name", index)): group["lr"]
+                        for index, group in enumerate(optimizer.param_groups)
+                    },
                     "private_scale": scale,
                     "elapsed_seconds": elapsed,
                     "tokens_per_second": tokens_seen / max(elapsed, 1e-9),

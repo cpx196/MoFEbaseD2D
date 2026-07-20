@@ -13,6 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--warmup-steps", type=int, required=True)
     parser.add_argument("--model-label", default="MoFE")
+    parser.add_argument("--dataset-label", default="WikiText-103")
     parser.add_argument("--phase-name", default="warmup")
     return parser.parse_args()
 
@@ -58,7 +59,7 @@ def main() -> None:
         ax.set_xlabel("Optimizer step")
 
     ax_loss.plot(steps, losses, color=colors[0], marker="o", linewidth=2)
-    ax_loss.set_title("Fixed WikiText-103 Validation Loss")
+    ax_loss.set_title(f"Fixed {args.dataset_label} Validation Loss")
     ax_loss.set_ylabel("Token-weighted language-modeling loss")
     ax_loss.annotate(
         f"{losses[0]:.4f}",
@@ -74,7 +75,7 @@ def main() -> None:
     )
 
     ax_ppl.plot(steps, perplexities, color=colors[1], marker="o", linewidth=2)
-    ax_ppl.set_title("Fixed WikiText-103 Validation Perplexity")
+    ax_ppl.set_title(f"Fixed {args.dataset_label} Validation Perplexity")
     ax_ppl.set_ylabel("Perplexity (lower is better)")
     ax_ppl.annotate(
         f"{perplexities[0]:.2f}",

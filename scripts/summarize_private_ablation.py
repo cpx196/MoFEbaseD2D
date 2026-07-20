@@ -12,7 +12,6 @@ DOWNSTREAM_METRICS = {
     "hellaswag": "acc_norm",
     "piqa": "acc_norm",
     "winogrande": "acc",
-    "arc_easy": "acc_norm",
 }
 LAYERS = (
     "transformer.h.9.mlp",
@@ -180,7 +179,7 @@ def main() -> None:
         "",
         "Private OFF sets the output scale to zero on the same checkpoint. Routing and "
         "private computation are retained, so this isolates predictive contribution rather "
-        "than runtime cost. ARC-Challenge is excluded.",
+        "than runtime cost.",
         "",
         "| Task | Metric | Private OFF | Private ON | ON - OFF |",
         "| --- | --- | ---: | ---: | ---: |",

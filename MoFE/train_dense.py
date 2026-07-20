@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
 import torch
 from accelerate import Accelerator, DataLoaderConfiguration, DistributedDataParallelKwargs
+from datasets import IterableDataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
@@ -23,14 +23,23 @@ from MoFE.train import (
     evaluate_validation_loss,
     load_training_dataset,
     set_seed,
+    training_dataloader_num_workers,
+    verify_fp32_training_state,
     weighted_loss_payload,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the dense GPT-2 control model.")
-    parser.add_argument("--train-file", required=True)
+    parser.add_argument(
+        "--train-file",
+        required=True,
+        help="Local .txt/.json/.jsonl/.parquet file or directory of Parquet shards",
+    )
     parser.add_argument("--text-column", default="text")
+    parser.add_argument("--streaming", action="store_true")
+    parser.add_argument("--shuffle-buffer-size", type=int, default=2_048)
+    parser.add_argument("--preprocessing-batch-size", type=int, default=64)
     parser.add_argument("--model-name-or-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--block-size", type=int, default=1024)
@@ -135,24 +144,30 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if accelerator.is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path, cache_dir=os.environ.get("HF_HOME")
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer.pad_token = tokenizer.eos_token
     with accelerator.main_process_first():
         dataset = load_training_dataset(args, tokenizer)
         if args.validation_file:
             validation_args = argparse.Namespace(**vars(args))
             validation_args.train_file = args.validation_file
+            validation_args.streaming = False
             validation_dataset = load_training_dataset(validation_args, tokenizer)
         else:
             validation_dataset = None
     collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    training_num_workers = training_dataloader_num_workers(dataset, args.num_workers)
+    if training_num_workers != args.num_workers:
+        accelerator.print(
+            "data_loader_config streaming=true "
+            f"requested_num_workers={args.num_workers} effective_num_workers=0",
+            flush=True,
+        )
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
+        shuffle=not isinstance(dataset, IterableDataset),
+        num_workers=training_num_workers,
         pin_memory=torch.cuda.is_available(),
         collate_fn=collator,
     )
@@ -169,16 +184,20 @@ def main() -> None:
         else None
     )
     if validation_dataset is not None:
+        validation_sequences = (
+            "streaming"
+            if isinstance(validation_dataset, IterableDataset)
+            else str(len(validation_dataset))
+        )
         accelerator.print(
             "validation_config "
-            f"file={args.validation_file} sequences={len(validation_dataset)} "
+            f"file={args.validation_file} sequences={validation_sequences} "
             f"interval_steps={args.validation_steps}",
             flush=True,
         )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
-        cache_dir=os.environ.get("HF_HOME"),
-        dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        dtype=torch.float32,
     )
     optimizer = AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -304,6 +323,17 @@ def main() -> None:
             if not accelerator.sync_gradients:
                 continue
             global_step += 1
+            if global_step == 1:
+                parameter_dtypes, optimizer_dtypes = verify_fp32_training_state(
+                    model, optimizer
+                )
+                accelerator.print(
+                    "precision_config "
+                    f"master_parameter_dtypes={parameter_dtypes} "
+                    f"optimizer_state_dtypes={optimizer_dtypes} "
+                    f"compute_precision={accelerator.mixed_precision}",
+                    flush=True,
+                )
             reduced_losses = accelerator.reduce(loss_accumulator, reduction="sum")
             effective_batch_samples = int(reduced_losses[-1].item())
             mean_loss = reduced_losses[0] / reduced_losses[-1].clamp_min(1)

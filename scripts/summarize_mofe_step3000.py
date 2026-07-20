@@ -12,7 +12,6 @@ DOWNSTREAM_METRICS = {
     "hellaswag": "acc_norm",
     "piqa": "acc_norm",
     "winogrande": "acc",
-    "arc_easy": "acc_norm",
 }
 
 
@@ -156,7 +155,7 @@ def main() -> None:
         capsize=3,
     )
     ax_scores.set_xticks(x, [label.replace("_", "\n") for label in labels])
-    ax_scores.set_title("Zero-shot Downstream Scores (ARC-Challenge Excluded)")
+    ax_scores.set_title("Zero-shot Downstream Scores")
     ax_scores.set_ylabel("Score")
     ax_scores.set_ylim(0, 0.72)
     ax_scores.grid(axis="y", alpha=0.25)
@@ -227,7 +226,7 @@ def main() -> None:
     lines = [
         "# MoFE Step-3000 Evaluation",
         "",
-        "ARC-Challenge is excluded. All downstream results are zero-shot and use "
+        "All downstream results are zero-shot and use "
         "the same bfloat16 evaluation setup.",
         "",
         "| Task | Metric | Dense 1500 | MoFE 1500 | MoFE 3000 | 3000 vs 1500 |",

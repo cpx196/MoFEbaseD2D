@@ -350,7 +350,7 @@ export TOKENIZERS_PARALLELISM=false
 
 ### 阶段 A：Dense 基线
 
-加载 GPT-2 small，完成固定 prompt 推理、WikiText-2 validation perplexity，以及 `lambada_openai、hellaswag、piqa、winogrande、arc_easy、arc_challenge` 的零样本评测。保存原始 JSON、汇总 CSV 和图。
+加载 GPT-2 small，完成固定 prompt 推理、WikiText-2 validation perplexity，以及 `lambada_openai、hellaswag、piqa、winogrande` 的零样本评测。保存原始 JSON、汇总 CSV 和图。
 
 ### 阶段 B：MoFE 初始化验证
 

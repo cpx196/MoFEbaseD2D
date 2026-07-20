@@ -13,8 +13,6 @@ TASK_METRICS = {
     "hellaswag": "acc_norm",
     "piqa": "acc_norm",
     "winogrande": "acc",
-    "arc_easy": "acc_norm",
-    "arc_challenge": "acc_norm",
 }
 
 

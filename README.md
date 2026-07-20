@@ -281,15 +281,17 @@ continued pretraining、更多样的数据和进一步 router 消融验证。
 目前已完成：
 
 1. Dense、MoFE、Sparse Upcycling 三种模型的匹配 1000-step 训练。
-2. 跨卡、跨梯度累积的正确训练 loss 聚合，以及固定 WikiText-103 validation。
+2. 跨卡、跨梯度累积的正确训练 loss 聚合，以及固定 validation 评测链路。
 3. MoFE step-3000 continued-training checkpoint 与既有 zero-shot 评测。
 4. MoFE step-1000 private ON/OFF 消融和 WikiText-2 PPL 对照。
 5. Upcycling 模型转换、checkpoint、可续训状态、单元测试和结果曲线。
 
-当前主要结论是：在相同 1000 optimizer steps 和 effective batch 32 下，MoFE
-明显优于 Dense；完整复制的 Upcycling 尚未优于 Dense。下一阶段计划使用更
-多样的 FineWeb/FineWeb-Edu continued-pretraining 数据，并增加 router shuffle、
-专家分化和多随机种子实验。
+当前有效结论来自 FP32 master 参数与 FP32 AdamW states 的 200-step 修正实验：
+Dense 和 MoFE 都能正常下降，MoFE 在相同 6.55M token 后的 held-out PPL 比 Dense
+低 1.06%。此前 1000-step 实验将参数和 Adam moments 都存为 BF16，对非零预训练
+权重造成严重更新量化，相关 4.45% 优势只作为历史 pilot 保留，不再作为方法结论。
+下一阶段继续使用独立 FineWeb-Edu held-out，并增加等 FLOPs、router shuffle 和
+多随机种子实验。历史 WikiText 结果同样不再用于训练验证或 checkpoint 选择。
 
 ## 数据与 Checkpoint
 
@@ -339,22 +341,246 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 | `moe_block/` | 构建 MoFE 时参考的原始实现 |
 | `D2Dinstr/` | Dense 基线和 MoFE 实验任务说明 |
 
-运行离线测试（当前共 11 项）：
+运行离线测试（当前共 13 项）：
 
 ```bash
-python -m unittest MoFE.tests.test_mofe MoFE.tests.test_upcycling
+python -m unittest \
+  MoFE.tests.test_data MoFE.tests.test_mofe MoFE.tests.test_upcycling
 ```
 
-历史 100-step 工程训练的核心参数（数据现位于外部 `$DATA_ROOT`）：
+本机 FineWeb-Edu `sample/10BT` 位于
+`/data/chenpengxu/HMoE_data/fineweb_10BT`，包含 14 个 Parquet 分片、
+9,672,101 篇文档和约 9.97B tokens。三个训练入口均可将该目录直接传给
+`--train-file`；Parquet 目录会按文件名排序并自动启用 streaming，不会生成全量
+tokenized 中间缓存。
+
+以下命令已在四张 RTX 4090 上完成 2-step MoFE smoke；它只验证数据和分布式
+训练链路，不代表正式长训练配置：
 
 ```bash
-accelerate launch --num_processes 4 -m MoFE.train \
-  --train-file "$DATA_ROOT/datasets/wikitext103/train.jsonl" \
-  --text-column text \
-  --per-device-batch-size 4 \
-  --gradient-accumulation-steps 2 \
-  --max-steps 100 \
-  --learning-rate 1e-5 \
-  --warmup-steps 10 \
-  --private-warmup-steps 100
+export HF_HOME=/data/chenpengxu/MoFEbaseD2D_runtime/hf
+
+accelerate launch --multi_gpu --num_processes 4 -m MoFE.train \
+  --train-file /data/chenpengxu/HMoE_data/fineweb_10BT \
+  --model-name-or-path openai-community/gpt2 \
+  --output-dir /data/chenpengxu/MoFEbaseD2D_runtime/runs/mofe_fineweb_smoke \
+  --block-size 1024 \
+  --per-device-batch-size 1 \
+  --gradient-accumulation-steps 1 \
+  --max-steps 2 \
+  --learning-rate 5e-5 \
+  --warmup-steps 0 \
+  --scheduler constant \
+  --private-warmup-steps 0 \
+  --logging-steps 1 \
+  --num-workers 0 \
+  --shuffle-buffer-size 256 \
+  --preprocessing-batch-size 16
+```
+
+#### FineWeb-Edu 四卡 1000-step 结果
+
+以下 1000-step 结果使用 BF16 master 参数和 BF16 Adam moments，存在架构相关的
+更新量化偏差，只作为历史记录。使用每卡 batch 4、gradient accumulation 2、effective batch 32、10-step LR
+warmup 后恒定 `1e-5`，以及 100-step private scale warmup 完成正式训练。为控制
+主机内存，streaming 使用 2,048 文档 shuffle buffer 和 0 个 DataLoader worker；
+训练入口现会对 streaming 数据自动强制该 worker 设置。
+
+| 数据与配置 | GPT-2 起点 | Final private OFF | Final private ON |
+| --- | ---: | ---: | ---: |
+| FineWeb-Edu held-out loss | 3.299973 | 3.300422 | **3.235094** |
+| FineWeb-Edu held-out PPL | 27.1119 | 27.1241 | **25.4088** |
+
+FineWeb-Edu held-out PPL 相比原始 GPT-2 降低 6.28%，且 private OFF 基本回到
+起点，说明域内增益主要来自 private 分支。最终吞吐约 43.7k tokens/s，PyTorch
+peak allocated memory 为 10.58 GiB/卡。完整 checkpoint、训练日志和评测位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/runs/
+  mofe_gpt2_finewebedu10bt_4gpu_1000step_b4_ga2_fixedval_sb2048_nw0_20260716
+```
+
+对 step 100 至 1000 的十个 checkpoint 使用同一 FineWeb-Edu held-out 重新评测后，
+validation loss 从 step 100 的 `3.264837` 连续下降到 step 900 的 `3.234236`；
+step 1000 轻微回升 `0.000859` 至 `3.235094`。当前最佳保存点是 step 900，完整
+曲线和精确表格位于上述运行目录的 `reports/fineweb_validation_curve`。
+
+使用完全匹配的数据流、seed、序列长度、effective batch、学习率和 1000 steps
+完成四卡 Dense GPT-2 对照。统一 checkpoint 重放精度后：
+
+| 模型 | Step 0 loss | Step 1000 loss | Step 1000 PPL | Tokens/s | Peak GiB/GPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 3.299059 | 3.280629 | 26.5925 | 83,297 | 7.46 |
+| MoFE | 3.299059 | **3.235094** | **25.4088** | 43,658 | 10.58 |
+
+在该历史 BF16 设置下，Dense PPL 相对起点降低 1.83%，MoFE step 1000 PPL 比
+Dense 低 4.45%；该差值已被 FP32-master 对照证明明显高估。Dense 和 MoFE 的
+最佳已保存点均为 step 900。输出及完整对比图表位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/runs/
+  dense_gpt2_finewebedu10bt_4gpu_1000step_b4_ga2_finewebval_sb2048_nw0_20260717
+/data/chenpengxu/MoFEbaseD2D_runtime/comparisons/
+  dense_mofe_finewebedu_4gpu_1000step_20260717
+```
+
+使用固定 FineWeb-Edu validation 选出的双方 step-900 checkpoint，完成四项
+lm-eval 0.4.12 zero-shot 下游评测：
+
+| 任务 | 指标 | Dense | MoFE | MoFE - Dense |
+| --- | --- | ---: | ---: | ---: |
+| LAMBADA OpenAI | acc | 0.308558 | 0.305647 | -0.002911 |
+| HellaSwag | acc_norm | 0.311591 | 0.311790 | +0.000199 |
+| PIQA | acc_norm | 0.626224 | 0.623504 | -0.002720 |
+| WinoGrande | acc | 0.505919 | 0.511444 | +0.005525 |
+
+Dense 与 MoFE 各胜两项，四项宏平均分别为 `0.438073` 和 `0.438096`，差值只有
+`+0.000023`，且所有 accuracy 差值均小于各自标准误，当前不能判定明确的下游
+赢家。MoFE 的 LAMBADA PPL 低 0.86%，但 exact-match accuracy 略低。原始 JSON、
+CSV、图和报告位于上述 comparison 目录的 `downstream` 子目录。
+
+使用 CalFLOPs 0.3.2 对相同 batch 和序列长度做理论计算量统计。profiling 时使用
+eager attention，以便 CalFLOPs 能观察到 fused SDPA 隐藏的 QK^T 和 AV 矩阵乘法。
+在训练使用的序列长度 1024 下，Dense 和 MoFE 每个 1024-token 序列的前向计算量
+分别为 `291.898 GFLOPs` 和 `385.741 GFLOPs`，MoFE 是 Dense 的 `1.3215x`。
+按 backward = 2x forward、每步 32768 token 估算，每步训练计算量分别为
+`28.022 TFLOPs` 和 `37.031 TFLOPs`。因此当前 1000/1000 step 是等 token 比较；
+等计算量时，1000 MoFE step 对应约 `1321.5` Dense step，而 1000 Dense step 对应
+约 `756.7` MoFE step。完整结果位于 comparison 目录的
+`compute/calflops_profile.json`，复现入口为 `python -m MoFE.profile_flops`。
+
+### FP32 master、固定学习率、无 warmup 的 200-step 对照
+
+Dense 和 MoFE 使用文件级隔离的 FineWeb-Edu 训练分片 000--012，并统一在 shard
+013 的固定 held-out 上每 10 step 做一次 validation。双方均使用 4 卡、序列长度
+1024、effective batch 32、固定学习率 `1e-5`、0 LR warmup 和 200 optimizer steps；
+MoFE 的 private scale 从 step 0 起固定为 1，不做 private warmup。每个模型共看到
+`6,553,600` 个训练 token。模型 master 参数与 AdamW 一阶、二阶矩保持 FP32，
+仅前向和反向计算使用 BF16 autocast。
+
+| 模型 | Step 0 loss | Step 200 loss | Loss 变化 | Step 200 PPL |
+| --- | ---: | ---: | ---: | ---: |
+| Dense | 3.299973 | 3.221984 | -0.077989 | 25.0778 |
+| MoFE | 3.299973 | **3.211319** | **-0.088654** | **24.8118** |
+
+step 200 时 MoFE loss 比 Dense 低 `0.010665`，PPL 低 `1.06%`；双方最佳验证点
+均为 step 200。Dense 吞吐为 61,318 token/s，MoFE 为 32,434 token/s，峰值显存
+分别为 8.85 和 13.25 GiB/GPU。旧 BF16-master 版本只有 2.99% 的 Dense 参数发生
+可表示变化，修正后为 99.9986%，所以旧 200-step 的 4.38% PPL 差距无效。21 个
+validation 点、10-step 训练 loss 采样、图和报告位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/comparisons/
+  dense_mofe_finewebedu_4gpu_200step_fp32master_constlr_nowarmup_val10_20260717
+```
+
+双方 step-200 checkpoint 还使用 lm-eval 0.4.12 完成四项 zero-shot 下游评测：
+
+| 任务 | Dense | MoFE | MoFE - Dense |
+| --- | ---: | ---: | ---: |
+| LAMBADA OpenAI acc | 0.320396 | 0.319814 | -0.000582 |
+| HellaSwag acc_norm | 0.313483 | 0.312189 | -0.001295 |
+| PIQA acc_norm | 0.630033 | 0.621328 | -0.008705 |
+| WinoGrande acc | 0.513812 | 0.501973 | -0.011839 |
+
+四任务宏平均为 Dense `0.444431`、MoFE `0.438826`，MoFE 低 `0.005605`。Dense
+四项数值都更高，但所有单项差异均小于报告的独立标准误，当前不能判定显著的下游
+赢家。LAMBADA PPL 为 Dense `36.0339`、MoFE `36.6882`，MoFE 高 1.82%。原始
+JSON、CSV、图和报告位于上述 comparison 目录的 `downstream` 子目录。
+
+### Sparse Upcycling FP32-master 200-step 对照
+
+遗漏的 Sparse Upcycling E16 K3 也使用相同协议重跑：最后 3 个 FFN 各替换为
+16 个完整复制专家，token-choice top-3；FP32 master 参数与 AdamW states、BF16
+计算、固定 `1e-5`、无 warmup、effective batch 32、6,553,600 token，并每 10 step
+在同一 FineWeb-Edu held-out 上验证。
+
+| 模型 | 参数量 | Step 200 loss | Step 200 PPL | Tokens/s | Peak GiB/GPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 124,439,808 | 3.221984 | 25.0778 | 61,318 | 8.85 |
+| MoFE | 209,595,696 | **3.211319** | **24.8118** | 32,434 | 13.25 |
+| Upcycling | 336,986,160 | 3.225175 | 25.1580 | 29,053 | 14.88 |
+
+Upcycling final loss 比 Dense 高 `0.003191`，比 MoFE 高 `0.013856`。所有 16 个专家
+都被使用，但 step-200 router entropy 为 `2.7665--2.7670`，接近
+`log(16)=2.7726`；各层专家相对 expert 0 的平均参数分歧只有 `0.17%--0.21%`。
+完整复制专家在短预算内仍未形成强分化。三模型日志、CSV、曲线和报告位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/comparisons/
+  dense_mofe_upcycling_finewebedu_4gpu_200step_fp32master_constlr_nowarmup_val10_20260717
+```
+
+从 2026-07-17 起，训练验证、checkpoint 选择和方法比较统一使用固定且与训练
+数据不重叠的 FineWeb-Edu held-out。WikiText 相关结果只作为历史记录保留，不再
+继续使用或扩展。
+
+### FineWeb-Edu GBS32 50k 主实验与三方法对照
+
+当前主实验统一使用 FineWeb-Edu 10BT、固定 held-out、4 张 RTX 4090、序列长度
+1024、effective batch 32、固定学习率 `1e-5`、0 LR warmup、FP32 master 参数与
+FP32 AdamW states，BF16 计算。每个 optimizer step 处理 32,768 tokens，50k step
+对应 1.6384B training tokens。训练 loss 每 50 step 记录一次，validation 每 200
+step 记录一次，checkpoint 每 5k step 保存一次，并包含 optimizer、scheduler 与
+random states 以支持后续续训。
+
+三种方法参数量如下：
+
+| 方法 | 总参数量 | 可训练参数量 | 相对 Dense |
+| --- | ---: | ---: | ---: |
+| Dense GPT-2 Small | 124,439,808 | 124,439,808 | 1.00x |
+| MoFE E16 K3 | 209,595,696 | 209,595,696 | 1.68x |
+| Sparse Upcycling E16 K3 | 336,986,160 | 336,986,160 | 2.71x |
+
+MoFE 参数细分为 remaining backbone `110,272,512`、shared experts `14,167,296`、
+factor banks `53,084,160`、cores `31,850,496`、private biases `184,320` 和
+routers `36,912`。Sparse Upcycling 参数细分为 remaining backbone `110,272,512`、
+完整复制 experts `226,676,736` 和 routers `36,912`。因此 Upcycling 比 MoFE 多
+约 127.39M 参数。
+
+Dense、MoFE 和 Sparse Upcycling 均已完成 50k step：
+
+| 模型 | Final step | Final validation loss | Final PPL | Best step | Best validation loss | Best PPL |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Dense | 50,000 | 3.112968 | 22.4877 | 49,600 | 3.112472 | 22.4765 |
+| MoFE | 50,000 | **3.097295** | **22.1380** | 49,600 | **3.096505** | **22.1205** |
+| Sparse Upcycling | 50,000 | 3.104230 | 22.2921 | 49,600 | 3.103765 | 22.2817 |
+
+在 50k step 上，MoFE 的 held-out validation loss 比 Dense 低 `0.015673`，比
+Sparse Upcycling 低 `0.006935`。当前排序为 MoFE < Upcycling < Dense。完整
+validation 曲线、训练 loss 曲线和图表位于仓库外 runtime 归档目录：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-20/comparisons/
+  gbs32_three_model_50k_downstream_validation_20260720
+/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-19/comparisons/
+  gbs32_50k_report_20260719
+```
+
+50k 下游任务只保留 LAMBADA 与 HellaSwag 作为主要趋势指标；ARC 和 WikiText 已
+从后续 benchmark 中移除。
+
+| 任务 | 指标 | Dense 50k | MoFE 50k | Upcycling 50k | MoFE - Dense | Upcycling - Dense |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| LAMBADA OpenAI | acc | 0.342519 | 0.342325 | 0.340190 | -0.000194 | -0.002329 |
+| HellaSwag | acc_norm | 0.315873 | 0.318861 | **0.319757** | +0.002987 | +0.003884 |
+
+对 5k、10k、...、50k 的十个 checkpoint 逐点评测后，HellaSwag 上 MoFE 从中后段
+开始基本持续高于 Dense；LAMBADA 更抖，双方交替领先。完整趋势表和图位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/comparisons/
+  gbs32_lambada_hellaswag_trend_5k_points_20260719
+```
+三方法 50k 对照的原始运行目录已按日期归档。当前 active runtime 只保留正在运行
+的 MoFE group-LR 实验；历史 50k checkpoint 位于：
+
+```text
+/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-17/runs/
+  dense_gpt2_finewebedu10bt_4gpu_5000step_fp32master_constlr_nowarmup_val100_ckpt1000_20260717
+  gbs32_dense5k10k_then_mofe10k_fp32master_constlr_nowarmup_val100_ckpt1000_20260717
+/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-18/runs/
+  gbs32_dense10k50k_then_mofe10k50k_fp32master_constlr_nowarmup_val200_ckpt5000_20260718
+/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-19/runs/
+  upcycling_gpt2_finewebedu10bt_4gpu_50k_gbs32_fp32master_constlr_nowarmup_val200_ckpt5000_20260719
 ```

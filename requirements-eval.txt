@@ -8,5 +8,6 @@ accelerate==1.14.0
 datasets==5.0.0
 lm-eval==0.4.12
 matplotlib==3.11.0
+calflops==0.3.2
 safetensors==0.8.0
 transformers==5.13.1

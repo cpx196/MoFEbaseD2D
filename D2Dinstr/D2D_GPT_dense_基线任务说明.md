@@ -141,8 +141,6 @@ PY
 | `hellaswag` | 常识续写排序 |
 | `piqa` | 物理常识推理 |
 | `winogrande` | 指代消解和常识推理 |
-| `arc_easy` | 基础科学问答 |
-| `arc_challenge` | 较难科学问答 |
 
 全部使用零样本设置，即 `num_fewshot=0`：
 
@@ -150,7 +148,7 @@ PY
 lm_eval \
   --model hf \
   --model_args pretrained=openai-community/gpt2,dtype=bfloat16,trust_remote_code=False \
-  --tasks lambada_openai,hellaswag,piqa,winogrande,arc_easy,arc_challenge \
+  --tasks lambada_openai,hellaswag,piqa,winogrande \
   --num_fewshot 0 \
   --batch_size auto \
   --output_path "$DATA_ROOT/results/dense_gpt2_small/lm_eval" \

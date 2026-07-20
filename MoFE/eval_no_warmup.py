@@ -19,8 +19,6 @@ DEFAULT_TASKS = (
     "hellaswag",
     "piqa",
     "winogrande",
-    "arc_easy",
-    "arc_challenge",
 )
 
 

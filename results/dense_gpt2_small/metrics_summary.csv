@@ -3,6 +3,4 @@ dense_baseline,openai-community/gpt2,0,0,0,lambada_openai,acc,0.3097224917523772
 dense_baseline,openai-community/gpt2,0,0,0,hellaswag,acc_norm,0.3121888070105557,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
 dense_baseline,openai-community/gpt2,0,0,0,piqa,acc_norm,0.6256800870511425,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
 dense_baseline,openai-community/gpt2,0,0,0,winogrande,acc,0.5138121546961326,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
-dense_baseline,openai-community/gpt2,0,0,0,arc_easy,acc_norm,0.3977272727272727,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
-dense_baseline,openai-community/gpt2,0,0,0,arc_challenge,acc_norm,0.22866894197952217,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
 dense_baseline,openai-community/gpt2,0,0,0,wikitext2_validation,perplexity,26.61877652450076,bfloat16,a7027cdc1f01c9c618c39eebe639d1664549b066
