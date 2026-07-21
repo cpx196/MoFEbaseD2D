@@ -36,26 +36,10 @@ lightning_logs/
 hf_cache/
 pip-build/
 
-# Keep only the published dense-baseline summary and figures.
+# Keep only the final compact experiment archive.
 /results/*
-!/results/dense_gpt2_small/
-/results/dense_gpt2_small/*
-!/results/dense_gpt2_small/metrics_summary.csv
-!/results/dense_gpt2_small/figures/
-!/results/dense_gpt2_small/figures/*.png
-!/results/mofe_gpt2_no_warmup/
-/results/mofe_gpt2_no_warmup/*
-!/results/mofe_gpt2_no_warmup/figures/
-!/results/mofe_gpt2_no_warmup/figures/*.csv
-!/results/mofe_gpt2_no_warmup/figures/*.png
-!/results/mofe_gpt2_zero_core2_100step/
-/results/mofe_gpt2_zero_core2_100step/*
-!/results/mofe_gpt2_zero_core2_100step/initialization_report.json
-!/results/mofe_gpt2_zero_core2_100step/training_log.jsonl
-!/results/mofe_gpt2_zero_core2_100step/figures/
-!/results/mofe_gpt2_zero_core2_100step/figures/*.png
-!/results/2026-07-15_1000step_comparison/
-!/results/2026-07-15_1000step_comparison/**
+!/results/final_50k/
+!/results/final_50k/**
 
 # Editors and operating systems
 .DS_Store
