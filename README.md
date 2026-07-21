@@ -1,194 +1,254 @@
+<div align="center">
+
 # MoFEbaseD2D
 
-MoFEbaseD2D studies parameter-efficient sparse expansion of GPT-2 Small on
-FineWeb-Edu 10BT. It compares three models under the same training-token budget:
+**GPT-2 Small · FineWeb-Edu 10BT · Factorized Experts**
 
-- **Dense**: continued pretraining of GPT-2 Small.
-- **MoFE**: Mixture of Factorized Experts in the final three GPT-2 MLP blocks.
-- **Upcycling**: sparse MoE expansion using complete copies of the final three MLPs.
+[中文](#中文) · [English](#english)
 
-In this repository, **MoFE means the group-learning-rate version** unless a
-historical result is explicitly labeled `MoFE baseline`. The final MoFE setup uses
-learning rates `1e-5` for the backbone/shared experts, `2e-5` for private
-factorized experts, and `3e-5` for routers. The original single-learning-rate
-MoFE is retained only in [timeline.md](timeline.md) as experiment history and is
-not part of the final comparison.
+<br>
 
-This work is an independent derivative of
-[D2DMoE](https://github.com/bartwojcik/D2DMoE), based on upstream commit
-`a7027cdc1f01c9c618c39eebe639d1664549b066`. The upstream project and this
-derivative use the MIT License.
+`Dense` &nbsp; `MoFE group LR` &nbsp; `Upcycling` &nbsp; `50k steps`
 
-## Method
+</div>
 
-MoFE replaces MLPs in Transformer blocks 9, 10, and 11. Each replacement keeps
-the original dense MLP as an always-active shared expert and adds 16 private
-factorized experts. A token-choice router selects the top 3 private experts per
-token. The private experts share four input and four output factor banks through
-a Cartesian `4 x 4` construction while retaining expert-specific cores.
+<a id="中文"></a>
+<details open>
+<summary><strong>中文</strong></summary>
 
-For expert `e = 4i + j`, hidden size `d = 768`, MLP size `f = 3072`, and rank
-`r = 576`, the two private projections are:
+## 项目简介
+
+MoFEbaseD2D 研究 GPT-2 Small 在 FineWeb-Edu 10BT 上的稀疏参数扩展，比较三种
+相同训练 token 预算的方法：
+
+- **Dense**：原始 GPT-2 Small 继续预训练。
+- **MoFE**：在最后三个 GPT-2 MLP block 上使用 Mixture of Factorized Experts。
+- **Upcycling**：将最后三个 MLP 替换为完整复制的稀疏专家。
+
+本项目后续所有未特别说明的 `MoFE` 都指 **MoFE group LR**。旧的统一学习率
+版本只保留在 [timeline.md](timeline.md) 的历史记录中，不参与最终比较。
+
+## MoFE 方法
+
+MoFE 替换 Transformer block 9、10、11 的 MLP。每层保留一个始终激活的 dense
+shared expert，并增加 16 个 factorized private experts。token-choice router 为
+每个 token 选择 top-3 private experts。
+
+private experts 使用 `4 x 4` Cartesian factor bank 和独立 expert core。对 expert
+`e = 4i + j`，两个投影为：
 
 ```text
 W1_e = A1_i C1_e B1_j
 W2_e = A2_i C2_e B2_j
 ```
 
-Execution applies each factorized projection as `x -> B -> C -> A`; complete
-expert matrices are never materialized per token. The converted layer output is:
+实际执行顺序为 `x -> B -> C -> A`，不会为每个 token 物化完整 expert 矩阵。shared
+分支保持原始 GPT-2 MLP，private output core 和 bias 零初始化，使模型在初始化
+时严格保持 Dense GPT-2 的函数。
 
-```text
-y = shared_mlp(x) + sum(g_e(x) * private_e(x))
-```
+## 最终实验协议
 
-Selected top-3 router weights are normalized to sum to one. There is no expert
-capacity limit and no token dropping. Training adds balance and router-z terms:
-
-```text
-L = L_LM + 0.01 * L_balance + 0.001 * L_z
-```
-
-The shared expert copies the original GPT-2 MLP. Input-side private cores are
-initialized from `Normal(0, 0.025^2)`; output-side cores and private biases start
-at zero. Consequently, private outputs are exactly zero at initialization and
-the converted model initially preserves the Dense GPT-2 function. Router weights
-use `Normal(0, 0.02^2)` and zero bias.
-
-All three models start from `openai-community/gpt2` and keep FP32 master
-parameters and FP32 AdamW states. Forward and backward computation use BF16.
-
-| Model | Parameters | Relative to Dense |
-| --- | ---: | ---: |
-| Dense | 0.124440B | 1.00x |
-| MoFE | 0.209596B | 1.68x |
-| Upcycling | 0.336986B | 2.71x |
-
-## Main Experiment
-
-The final archived comparison uses FineWeb-Edu 10BT with training shards
-`000-012` and a fixed, disjoint held-out tail from shard `013`.
-
-| Setting | Value |
+| 配置 | 值 |
 | --- | --- |
-| Hardware | 4 x RTX 4090 |
-| Sequence length | 1024 |
-| Per-device batch | 4 |
-| Gradient accumulation | 2 |
+| 数据 | FineWeb-Edu 10BT，train shards 000-012 |
+| Held-out | shard 013 的固定验证集 |
+| 硬件 | 4 x RTX 4090 |
+| 序列长度 | 1024 |
 | Global batch size | 32 sequences |
-| Tokens per optimizer step | 32,768 |
-| Optimizer steps | 50,000 |
-| Training tokens per model | 1.6384B |
-| Scheduler | Constant, no warmup |
-| Weight decay | 0.1 |
-| Validation interval | 200 steps |
-| Checkpoint interval | 5,000 steps |
-| Seed | 42 |
+| 每 step token 数 | 32,768 |
+| 训练步数 | 50,000 |
+| 每模型训练 token | 1.6384B |
+| 计算精度 | BF16 |
+| Master 参数 / AdamW states | FP32 |
+| Scheduler | Constant，无 warmup |
+| Validation | 每 200 step |
+| Checkpoint | 每 5,000 step，包含 optimizer/scheduler/RNG state |
 
-Checkpoints include model weights, optimizer and scheduler states, tokenizer,
-and one RNG state per rank, so training can be resumed without rebuilding the
-optimizer.
+MoFE group LR：shared/backbone 为 `1e-5`，private experts 为 `2e-5`，router 为
+`3e-5`。Dense 和 Upcycling 使用 `1e-5`。
 
-## Results at 50k
+## 50k 结果
 
-![Validation loss and next-token accuracy](results/final_50k/figures/validation_loss_and_token_accuracy_50k.png)
+![50k validation loss and token accuracy](results/final_50k/figures/validation_loss_and_token_accuracy_50k.png)
 
-FineWeb-Edu held-out results:
+FineWeb-Edu held-out：
 
-| Model | Validation loss | Perplexity | Next-token accuracy |
+| 方法 | Validation loss | PPL | Next-token prediction accuracy |
 | --- | ---: | ---: | ---: |
 | Dense | 3.112968 | 22.4877 | 40.8511% |
-| MoFE | **3.092061** | **22.0224** | **41.1613%** |
+| **MoFE group LR** | **3.092061** | **22.0224** | **41.1613%** |
 | Upcycling | 3.104230 | 22.2921 | 40.9910% |
 
-MoFE has the lowest validation loss and highest next-token accuracy. Relative to
-Dense, its final validation loss is lower by `0.020907`, while next-token
-accuracy is higher by `0.3102` percentage points.
+50k 下游任务统一使用原始 `acc`：
 
-Zero-shot downstream results use the original `acc` metric for both tasks:
-
-| Model | LAMBADA acc | HellaSwag acc |
+| 方法 | LAMBADA acc | HellaSwag acc |
 | --- | ---: | ---: |
 | Dense | 0.340772 | 0.291675 |
-| MoFE | **0.343101** | **0.294662** |
+| **MoFE group LR** | **0.343101** | **0.294662** |
 | Upcycling | 0.340190 | 0.293467 |
 
-ARC and WikiText are not part of the final benchmark. HellaSwag `acc_norm` is
-present in the raw lm-eval output but is not used in the primary table.
+ARC 和 WikiText 不属于最终 benchmark；HellaSwag 的 `acc_norm` 虽存在于原始
+lm-eval JSON，但不用于主表。
 
-## Archived Results
+## 原始实验数据
 
-The compact, submission-ready raw data is stored in
-[`results/final_50k/`](results/final_50k/):
+最终数据集中在 [results/final_50k](results/final_50k/README.md)：
 
-```text
-results/final_50k/
-├── validation/                         # Complete held-out loss series
-├── validation_prediction_accuracy/     # 30 raw JSON points and summary CSV
-├── downstream/                         # Three raw 50k lm-eval JSON files
-└── figures/                            # Final combined figure
-```
+- `validation/validation_loss_50k.csv`：三种方法的 50k validation loss 数据。
+- `validation_prediction_accuracy/raw/`：三种方法各 10 个 checkpoint，共 30 个原始 JSON。
+- `downstream/`：三种方法 50k step 的 LAMBADA/HellaSwag 原始 JSON。
+- `figures/`：最终横向 loss 与 token accuracy 对比图。
 
-See [results/final_50k/README.md](results/final_50k/README.md) for schemas and
-file-level details. Checkpoints, datasets, caches, and full logs remain outside
-Git under `/data/chenpengxu/MoFEbaseD2D_runtime/`.
+旧实验完整保留在 [archive](archive/README.md)，没有删除历史数据。
 
-## Code Layout
+## 代码与运行
 
-| Path | Purpose |
+当前实验实现位于 `MoFE/`：
+
+| 路径 | 作用 |
 | --- | --- |
-| `MoFE/layer.py` | Factorized experts, shared expert, and top-k routing |
-| `MoFE/modeling.py` | GPT-2 conversion and parameter accounting |
-| `MoFE/train.py` | MoFE training, including grouped learning rates |
-| `MoFE/train_dense.py` | Matched Dense training |
-| `MoFE/upcycling.py` | Sparse Upcycling model conversion |
-| `MoFE/train_upcycling.py` | Matched Upcycling training |
-| `MoFE/eval_validation_loss.py` | Fixed held-out loss evaluation |
-| `MoFE/eval_validation_token_accuracy.py` | Next-token accuracy evaluation |
-| `MoFE/eval_any_checkpoint.py` | LAMBADA and HellaSwag evaluation |
-| `MoFE/configs/` | Final E16/K3 model configurations |
-| `MoFE/tests/` | Data, MoFE, and Upcycling tests |
+| `MoFE/layer.py` | Factorized experts、shared expert、top-k routing |
+| `MoFE/modeling.py` | GPT-2 转换和参数统计 |
+| `MoFE/train.py` | MoFE group LR 训练入口 |
+| `MoFE/train_dense.py` | Dense 训练入口 |
+| `MoFE/train_upcycling.py` | Upcycling 训练入口 |
+| `MoFE/eval_validation_loss.py` | Held-out loss 评测 |
+| `MoFE/eval_validation_token_accuracy.py` | Next-token accuracy 评测 |
+| `MoFE/configs/` | E16/K3 配置 |
 
-## Usage
-
-Create an environment, install the single dependency list, then run the offline
-tests:
+安装依赖并运行测试：
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
 python -m unittest \
   MoFE.tests.test_data \
   MoFE.tests.test_mofe \
   MoFE.tests.test_upcycling
 ```
 
-The final MoFE learning-rate arguments are:
+完整实验时间线见 [timeline.md](timeline.md)。
 
-```bash
-python -m accelerate.commands.launch \
-  --multi_gpu --num_processes 4 --mixed_precision bf16 \
-  -m MoFE.train \
-  --mofe-config MoFE/configs/mofe_gpt2_last3_e16_k3.json \
-  --learning-rate 1e-5 \
-  --shared-learning-rate 1e-5 \
-  --private-learning-rate 2e-5 \
-  --router-learning-rate 3e-5 \
-  --per-device-batch-size 4 \
-  --gradient-accumulation-steps 2 \
-  --validation-steps 200 \
-  --save-steps 5000 \
-  <data and output arguments>
+</details>
+
+<a id="english"></a>
+<details>
+<summary><strong>English</strong></summary>
+
+## Overview
+
+MoFEbaseD2D studies sparse parameter expansion of GPT-2 Small on FineWeb-Edu
+10BT. It compares three methods under the same training-token budget:
+
+- **Dense**: continued pretraining of GPT-2 Small.
+- **MoFE**: Mixture of Factorized Experts in the final three GPT-2 MLP blocks.
+- **Upcycling**: sparse expansion using complete copies of the final three MLPs.
+
+Unless explicitly labeled otherwise, **MoFE means MoFE group LR**. The older
+single-learning-rate MoFE is preserved only as historical context in
+[timeline.md](timeline.md) and is excluded from the final comparison.
+
+## Method
+
+MoFE replaces the MLPs in Transformer blocks 9, 10, and 11. Each converted layer
+keeps one always-active dense shared expert and adds 16 factorized private
+experts. A token-choice router selects the top 3 private experts per token.
+
+With a `4 x 4` Cartesian factor-bank construction and expert `e = 4i + j`:
+
+```text
+W1_e = A1_i C1_e B1_j
+W2_e = A2_i C2_e B2_j
 ```
 
-The complete development and experiment record is maintained in
-[timeline.md](timeline.md).
+The factorized path runs as `x -> B -> C -> A` without materializing complete
+expert matrices per token. The shared branch is copied from the original GPT-2
+MLP. Private output cores and biases are zero-initialized, so the converted model
+preserves the Dense GPT-2 function at initialization.
 
-## Citation
+## Final Protocol
 
-The upstream D2DMoE project accompanies:
+| Setting | Value |
+| --- | --- |
+| Data | FineWeb-Edu 10BT, training shards 000-012 |
+| Held-out set | Fixed validation tail from shard 013 |
+| Hardware | 4 x RTX 4090 |
+| Sequence length | 1024 |
+| Global batch size | 32 sequences |
+| Tokens per step | 32,768 |
+| Optimizer steps | 50,000 |
+| Training tokens per model | 1.6384B |
+| Compute | BF16 |
+| Master parameters / AdamW states | FP32 |
+| Scheduler | Constant, no warmup |
+| Validation | Every 200 steps |
+| Checkpoint | Every 5,000 steps, including optimizer/scheduler/RNG state |
+
+MoFE group LR uses `1e-5` for the backbone/shared experts, `2e-5` for private
+experts, and `3e-5` for routers. Dense and Upcycling use `1e-5`.
+
+## Results at 50k
+
+![50k validation loss and token accuracy](results/final_50k/figures/validation_loss_and_token_accuracy_50k.png)
+
+FineWeb-Edu held-out results:
+
+| Method | Validation loss | PPL | Next-token prediction accuracy |
+| --- | ---: | ---: | ---: |
+| Dense | 3.112968 | 22.4877 | 40.8511% |
+| **MoFE group LR** | **3.092061** | **22.0224** | **41.1613%** |
+| Upcycling | 3.104230 | 22.2921 | 40.9910% |
+
+Downstream results use the original `acc` metric for both tasks:
+
+| Method | LAMBADA acc | HellaSwag acc |
+| --- | ---: | ---: |
+| Dense | 0.340772 | 0.291675 |
+| **MoFE group LR** | **0.343101** | **0.294662** |
+| Upcycling | 0.340190 | 0.293467 |
+
+ARC and WikiText are excluded from the final benchmark. HellaSwag `acc_norm` is
+present in raw lm-eval JSON but is not used in the primary table.
+
+## Raw Experiment Data
+
+The final archive is in [results/final_50k](results/final_50k/README.md):
+
+- `validation/validation_loss_50k.csv`: 50k held-out loss data for all three methods.
+- `validation_prediction_accuracy/raw/`: 30 original JSON points, 10 checkpoints per method.
+- `downstream/`: original 50k LAMBADA/HellaSwag JSON outputs for all three methods.
+- `figures/`: the final side-by-side loss and token-accuracy figure.
+
+All historical experiments remain available in [archive](archive/README.md).
+
+## Code and Usage
+
+The active implementation lives in `MoFE/`. Install dependencies and run tests:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python -m unittest \
+  MoFE.tests.test_data \
+  MoFE.tests.test_mofe \
+  MoFE.tests.test_upcycling
+```
+
+The full experiment record is maintained in [timeline.md](timeline.md).
+
+## Upstream
+
+This project is an independent derivative of
+[D2DMoE](https://github.com/bartwojcik/D2DMoE), based on upstream commit
+`a7027cdc1f01c9c618c39eebe639d1664549b066`. The upstream project and this
+derivative use the MIT License. The associated paper is:
 
 > Filip Szatkowski, Bartosz Wojcik, Mikolaj Piorczynski, Simone Scardapane.
 > Exploiting Activation Sparsity with Dense to Dynamic-k Mixture-of-Experts
 > Conversion. NeurIPS 2024. <https://arxiv.org/abs/2310.04361>
+
+</details>
