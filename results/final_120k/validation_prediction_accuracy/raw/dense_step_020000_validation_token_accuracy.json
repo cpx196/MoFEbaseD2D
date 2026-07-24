@@ -1,0 +1,18 @@
+{
+  "checkpoint": "/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-18/runs/gbs32_dense10k50k_then_mofe10k50k_fp32master_constlr_nowarmup_val200_ckpt5000_20260718/dense_gpt2_finewebedu10bt_4gpu_continue_10k_to_50k_gbs32_fp32master_constlr_nowarmup_val200_ckpt5000_20260718/step_020000",
+  "step": 20000,
+  "dataset": "/data/chenpengxu/MoFEbaseD2D_runtime/datasets/fineweb_10BT/heldout_tail_013.jsonl",
+  "protocol": "fixed packed validation next-token prediction",
+  "block_size": 1024,
+  "batch_size": 4,
+  "precision": "float32 weights with bfloat16 autocast",
+  "model_type": "dense",
+  "private_scale": null,
+  "shared_scale": 1.0,
+  "sample_count": 237,
+  "token_count": 242451,
+  "correct_tokens": 98623,
+  "token_accuracy": 0.40677497721189027,
+  "negative_log_likelihood": 3.1355488974333814,
+  "perplexity": 23.001257708983726
+}

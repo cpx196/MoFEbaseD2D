@@ -1,0 +1,36 @@
+{
+  "checkpoint": "/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-23/runs/mofe95k_then_upcycling_to120k_gbs32_20260723/upcycling_80k_to_120k/step_095000",
+  "step": 95000,
+  "dataset": "/data/chenpengxu/MoFEbaseD2D_runtime/datasets/fineweb_10BT/heldout_tail_013.jsonl",
+  "protocol": "fixed packed validation next-token prediction",
+  "block_size": 1024,
+  "batch_size": 4,
+  "precision": "float32 weights with bfloat16 autocast",
+  "model_type": "upcycling",
+  "private_scale": null,
+  "shared_scale": 1.0,
+  "sample_count": 237,
+  "token_count": 242451,
+  "correct_tokens": 100014,
+  "token_accuracy": 0.4125122189638319,
+  "negative_log_likelihood": 3.0828823007108794,
+  "perplexity": 21.821207122464816,
+  "upcycling_config": {
+    "model_name_or_path": "openai-community/gpt2",
+    "moe_layer_indices": [
+      9,
+      10,
+      11
+    ],
+    "num_experts": 16,
+    "top_k": 3,
+    "router_init_std": 0.02,
+    "router_aux_loss_coef": 0.01,
+    "router_z_loss_coef": 0.001,
+    "seed": 42,
+    "moe_type": "sparse_upcycling",
+    "routing": "token_choice",
+    "expert_init": "exact_dense_ffn_copy",
+    "shared_expert": false
+  }
+}

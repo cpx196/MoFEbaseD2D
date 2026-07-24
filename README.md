@@ -6,7 +6,7 @@
 
 [中文](README.zh.md)
 
-`Dense` &nbsp; `MoFE group LR` &nbsp; `Upcycling` &nbsp; `50k steps`
+`Dense` &nbsp; `MoFE group LR` &nbsp; `Upcycling` &nbsp; `50k final + 120k diagnostic`
 
 </div>
 
@@ -62,6 +62,12 @@ preserves the Dense GPT-2 function at initialization.
 MoFE group LR uses `1e-5` for the backbone/shared experts, `2e-5` for private
 experts, and `3e-5` for routers. Dense and Upcycling use `1e-5`.
 
+Continuation checkpoints did not store the streaming dataloader cursor. A new
+process restored model and optimizer state but rebuilt the fixed-seed stream
+from its beginning. Token counts across continuation boundaries therefore mean
+processed tokens, not unique tokens. Interpret both the 50k result and the 120k
+extension below with this limitation.
+
 ## Results at 50k
 
 ![50k validation loss and token accuracy](results/final_50k/figures/validation_loss_and_token_accuracy_50k.png)
@@ -85,14 +91,39 @@ Downstream results use the original `acc` metric for both tasks:
 ARC and WikiText are excluded from the final benchmark. HellaSwag `acc_norm` is
 present in raw lm-eval JSON but is not used in the primary table.
 
+## Diagnostic Extension to 120k
+
+![120k validation loss and token accuracy](results/final_120k/figures/validation_loss_and_token_accuracy_120k.png)
+
+Step 120k corresponds to 3.93216B processed tokens. The 50k-to-80k and
+80k-to-120k continuations restarted the training stream and therefore overlap
+in examples; MoFE restarted it once more at 95k. These checkpoints support
+diagnostic and method comparisons, not an uninterrupted unique-token scaling
+claim.
+
+| Method | Validation loss | Token accuracy | LAMBADA acc | HellaSwag acc |
+| --- | ---: | ---: | ---: | ---: |
+| Dense | 3.088866 | 41.1081% | 0.336115 | 0.292272 |
+| **MoFE group LR** | **3.059887** | **41.4678%** | 0.339220 | **0.295758** |
+| Upcycling | 3.072386 | 41.3044% | **0.339802** | 0.294563 |
+
 ## Raw Experiment Data
 
-The final archive is in [results/final_50k](results/final_50k/README.md):
+The 50k archive is in [results/final_50k](results/final_50k/README.md):
 
 - `validation/validation_loss_50k.csv`: 50k held-out loss data for all three methods.
 - `validation_prediction_accuracy/raw/`: 30 original JSON points, 10 checkpoints per method.
 - `downstream/`: original 50k LAMBADA/HellaSwag JSON outputs for all three methods.
 - `figures/`: the final side-by-side loss and token-accuracy figure.
+
+The 80k-to-120k diagnostic archive is in
+[results/final_120k](results/final_120k/README.md):
+
+- `validation/`: complete held-out loss records through 120k.
+- `validation_prediction_accuracy/`: 72 raw evaluations and the 5k-to-120k CSV.
+- `downstream/`: consolidated and raw LAMBADA/HellaSwag results at 80k, 100k,
+  110k, and 120k.
+- `figures/`: the combined 120k loss and token-accuracy plot.
 
 All historical experiments remain available in [archive](archive/README.md).
 

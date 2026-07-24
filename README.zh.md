@@ -4,9 +4,9 @@
 
 **GPT-2 Small · FineWeb-Edu 10BT · Factorized Experts**
 
-[English](README.en.md)
+[English](README.md)
 
-`Dense` &nbsp; `MoFE group LR` &nbsp; `Upcycling` &nbsp; `50k steps`
+`Dense` &nbsp; `MoFE group LR` &nbsp; `Upcycling` &nbsp; `50k final + 120k diagnostic`
 
 </div>
 
@@ -61,6 +61,10 @@ W2_e = A2_i C2_e B2_j
 MoFE group LR：shared/backbone 为 `1e-5`，private experts 为 `2e-5`，router 为
 `3e-5`。Dense 和 Upcycling 使用 `1e-5`。
 
+续训 checkpoint 没有保存 streaming dataloader 游标。新进程恢复模型和优化器后会
+从固定 seed 数据流的开头重新读取，因此跨续训边界的 token 计数是 processed tokens，
+不是 unique tokens。50k 结果和下面的 120k 扩展都应结合这一限制解释。
+
 ## 50k 结果
 
 ![50k validation loss and token accuracy](results/final_50k/figures/validation_loss_and_token_accuracy_50k.png)
@@ -84,14 +88,35 @@ FineWeb-Edu held-out：
 ARC 和 WikiText 不属于最终 benchmark；HellaSwag 的 `acc_norm` 虽存在于原始
 lm-eval JSON，但不用于主表。
 
+## 120k 诊断性扩展
+
+![120k validation loss and token accuracy](results/final_120k/figures/validation_loss_and_token_accuracy_120k.png)
+
+120k checkpoint 对应 3.93216B processed tokens。由于 50k 到 80k、80k 到 120k
+续训时数据流从头启动，训练样本存在重叠；MoFE 还在 95k 再次启动数据流。因此这组
+结果用于 checkpoint 行为和方法对比，不作为 uninterrupted unique-token scaling 结论。
+
+| 方法 | Validation loss | Token accuracy | LAMBADA acc | HellaSwag acc |
+| --- | ---: | ---: | ---: | ---: |
+| Dense | 3.088866 | 41.1081% | 0.336115 | 0.292272 |
+| **MoFE group LR** | **3.059887** | **41.4678%** | 0.339220 | **0.295758** |
+| Upcycling | 3.072386 | 41.3044% | **0.339802** | 0.294563 |
+
 ## 原始实验数据
 
-最终数据集中在 [results/final_50k](results/final_50k/README.md)：
+50k 最终数据集中在 [results/final_50k](results/final_50k/README.md)：
 
 - `validation/validation_loss_50k.csv`：三种方法的 50k validation loss 数据。
 - `validation_prediction_accuracy/raw/`：三种方法各 10 个 checkpoint，共 30 个原始 JSON。
 - `downstream/`：三种方法 50k step 的 LAMBADA/HellaSwag 原始 JSON。
 - `figures/`：最终横向 loss 与 token accuracy 对比图。
+
+80k 到 120k 诊断数据集中在 [results/final_120k](results/final_120k/README.md)：
+
+- `validation/`：三种方法截至 120k 的完整 held-out loss。
+- `validation_prediction_accuracy/`：5k 到 120k 共 72 个原始评测点和汇总 CSV。
+- `downstream/`：80k、100k、110k、120k 的 LAMBADA/HellaSwag CSV 和原始 JSON。
+- `figures/`：120k loss 与 token accuracy 双轴图。
 
 旧实验完整保留在 [archive](archive/README.md)，没有删除历史数据。
 

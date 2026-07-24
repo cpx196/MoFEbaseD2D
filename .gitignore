@@ -40,6 +40,8 @@ pip-build/
 /results/*
 !/results/final_50k/
 !/results/final_50k/**
+!/results/final_120k/
+!/results/final_120k/**
 
 # Editors and operating systems
 .DS_Store

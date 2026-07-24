@@ -4,6 +4,16 @@ This directory contains the compact raw-data archive for the final matched
 Dense, MoFE group-LR, and Upcycling experiments. Every model was trained for
 50,000 optimizer steps, or 1.6384B training tokens, on FineWeb-Edu 10BT.
 
+## Data-Stream Limitation
+
+The streaming dataloader cursor was not stored in continuation checkpoints.
+When training resumed in a new process, the fixed-seed shuffled stream was
+rebuilt from its beginning. The reported token budget therefore counts
+processed tokens and may include repeated examples across continuation
+boundaries; it is not a guaranteed unique-token count. The checkpoint
+evaluations remain valid, but this archive should not be interpreted as an
+uninterrupted unique-token scaling run.
+
 ## Files
 
 - `validation/validation_loss_50k.csv`: all available held-out validation-loss

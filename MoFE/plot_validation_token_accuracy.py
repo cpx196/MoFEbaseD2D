@@ -291,6 +291,35 @@ def write_md(
             f"{final['negative_log_likelihood']:.6f} | {best['step']:,} | "
             f"{best['token_accuracy']:.6f} |"
         )
+    by_step = {
+        step: {
+            record["model"]: record
+            for record in records
+            if record["step"] == step
+        }
+        for step in sorted({record["step"] for record in records})
+    }
+    lines.extend(
+        [
+            "",
+            "## All Checkpoints",
+            "",
+            "| Step | Training tokens (B) | Dense | MoFE group LR | Upcycling |",
+            "|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for step, step_records in by_step.items():
+        tokens = next(iter(step_records.values()))["btokens"]
+        values = [
+            f"{step_records[model]['token_accuracy'] * 100:.4f}%"
+            if model in step_records
+            else "-"
+            for model in MODEL_ORDER
+        ]
+        lines.append(
+            f"| {step // 1000}k | {tokens:.5f} | "
+            f"{values[0]} | {values[1]} | {values[2]} |"
+        )
     lines.extend(
         [
             "",

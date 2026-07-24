@@ -1,0 +1,36 @@
+{
+  "checkpoint": "/data/chenpengxu/MoFEbaseD2D_runtime/by_date/2026-07-19/runs/upcycling_gpt2_finewebedu10bt_4gpu_50k_gbs32_fp32master_constlr_nowarmup_val200_ckpt5000_20260719/step_025000",
+  "step": 25000,
+  "dataset": "/data/chenpengxu/MoFEbaseD2D_runtime/datasets/fineweb_10BT/heldout_tail_013.jsonl",
+  "protocol": "fixed packed validation next-token prediction",
+  "block_size": 1024,
+  "batch_size": 4,
+  "precision": "float32 weights with bfloat16 autocast",
+  "model_type": "upcycling",
+  "private_scale": null,
+  "shared_scale": 1.0,
+  "sample_count": 237,
+  "token_count": 242451,
+  "correct_tokens": 98904,
+  "token_accuracy": 0.407933974287588,
+  "negative_log_likelihood": 3.126040866103353,
+  "perplexity": 22.783597430184923,
+  "upcycling_config": {
+    "model_name_or_path": "openai-community/gpt2",
+    "moe_layer_indices": [
+      9,
+      10,
+      11
+    ],
+    "num_experts": 16,
+    "top_k": 3,
+    "router_init_std": 0.02,
+    "router_aux_loss_coef": 0.01,
+    "router_z_loss_coef": 0.001,
+    "seed": 42,
+    "moe_type": "sparse_upcycling",
+    "routing": "token_choice",
+    "expert_init": "exact_dense_ffn_copy",
+    "shared_expert": false
+  }
+}
